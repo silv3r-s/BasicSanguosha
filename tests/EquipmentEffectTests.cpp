@@ -1,0 +1,17 @@
+#include <cstdlib>
+#include <iostream>
+#include <memory>
+#include "core/GameEngine.h"
+using namespace sanguosha;
+namespace {
+[[noreturn]] void fail(const char* m){std::cerr<<"FAIL: "<<m<<'\n';std::exit(1);} void ok(bool x,const char*m){if(!x)fail(m);}
+std::shared_ptr<Card> eq(const char* id,const char* name,EquipmentSlot slot){return std::make_shared<Card>(id,name,slot==EquipmentSlot::Weapon?CardType::Weapon:CardType::Armor,Suit::Spade,1,EquipmentData{slot,3});}
+GameEngine game(){GameEngine g;g.createGame({"A","B"});g.startGame();return g;}
+bool has(const GameEngine&g,const char*n,EquipmentEffectType e,PlayerId owner,PlayerId target){for(const auto&x:g.equipmentEffects())if(x.equipmentName==n&&x.effect==e&&x.ownerId==owner&&x.targetId==target)return true;return false;}
+void resolveSlash(GameEngine&g){auto r=g.pendingResponse();ok(r.has_value(),"response");ok(g.submitAction(RespondAction{r->responder,r->requestId,std::nullopt}).accepted,"pass");}
+void qinggangAndRenwang(){auto g=game();g.testingEquip(1,eq("q","青釭剑",EquipmentSlot::Weapon));g.testingEquip(2,eq("r","仁王盾",EquipmentSlot::Armor));g.testingStartSlash(1,{2},1,DamageNature::Normal,true);resolveSlash(g);ok(has(g,"青釭剑",EquipmentEffectType::IgnoreArmor,1,2),"qinggang emits");ok(!has(g,"仁王盾",EquipmentEffectType::DamagePrevented,2,2),"ignore armor suppresses renwang");}
+void zhuqueAndVine(){auto g=game();g.testingEquip(1,eq("z","朱雀羽扇",EquipmentSlot::Weapon));g.testingEquip(2,eq("v","藤甲",EquipmentSlot::Armor));const_cast<Player*>(g.player(1))->addCard(std::make_shared<Card>("slash","slash",CardType::Slash,Suit::Spade,1));ok(g.submitAction(PlayCardAction{1,"slash",{2}}).accepted,"zhuque slash");resolveSlash(g);ok(has(g,"朱雀羽扇",EquipmentEffectType::SlashConvertedToFire,1,0),"zhuque emits");ok(has(g,"藤甲",EquipmentEffectType::FireDamageIncreased,2,2),"vine fire emits");const auto&es=g.equipmentEffects();ok(es.size()>=2&&es[es.size()-2].eventId<es.back().eventId,"ids monotonic and effects retained");}
+void vineAndLion(){auto g=game();g.testingEquip(2,eq("v","藤甲",EquipmentSlot::Armor));g.testingStartSlash(1,{2});resolveSlash(g);ok(has(g,"藤甲",EquipmentEffectType::DamagePrevented,2,2),"vine slash emits");auto l=game();l.testingEquip(2,eq("l","白银狮子",EquipmentSlot::Armor));l.testingApplyDamage(Damage{1,2,3,DamageNature::Normal});ok(has(l,"白银狮子",EquipmentEffectType::DamageCapped,2,2),"lion cap emits");l.testingSetHp(2,2);l.testingRemoveEquipment(2,EquipmentSlot::Armor);ok(has(l,"白银狮子",EquipmentEffectType::HealOnLeave,2,2),"lion heal emits");}
+void noFalseEvents(){auto g=game();g.testingEquip(1,eq("z","朱雀羽扇",EquipmentSlot::Weapon));const_cast<Player*>(g.player(1))->addCard(std::make_shared<Card>("fire","fire",CardType::FireSlash,Suit::Heart,1));ok(g.submitAction(PlayCardAction{1,"fire",{2}}).accepted,"fire slash");resolveSlash(g);ok(!has(g,"朱雀羽扇",EquipmentEffectType::SlashConvertedToFire,1,0),"fire slash does not convert");auto l=game();l.testingEquip(2,eq("l","白银狮子",EquipmentSlot::Armor));l.testingApplyDamage(Damage{1,2,1,DamageNature::Normal});ok(!has(l,"白银狮子",EquipmentEffectType::DamageCapped,2,2),"one damage no cap");auto full=game();full.testingEquip(2,eq("lf","白银狮子",EquipmentSlot::Armor));full.testingRemoveEquipment(2,EquipmentSlot::Armor);ok(!has(full,"白银狮子",EquipmentEffectType::HealOnLeave,2,2),"full hp no heal");}
+}
+int main(){qinggangAndRenwang();zhuqueAndVine();vineAndLion();noFalseEvents();std::cout<<"BasicSanguoshaEquipmentEffectTests PASS\n";}

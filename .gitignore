@@ -1,0 +1,36 @@
+# CMake and compiler output
+/build/
+/build-*/
+/dist/
+/Testing/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.cmake.user
+*.obj
+*.o
+*.lib
+*.exp
+*.pdb
+*.ilk
+
+# IDE and local machine state
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.log
+
+# Secrets and local configuration
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Friend-test packages belong in GitHub Releases, not source history
+BasicSanguosha_FriendTest_*/
+BasicSanguosha_FriendTest_*.zip
+.packaging-temp/
