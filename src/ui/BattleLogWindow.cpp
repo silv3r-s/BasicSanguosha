@@ -26,9 +26,6 @@ BattleLogWindow::BattleLogWindow(QWidget* parent) : QWidget(parent, Qt::Window)
     logView_->setObjectName(QStringLiteral("battleLogView"));
     logView_->setReadOnly(true);
     logView_->setPlaceholderText(tr("当前暂无对战记录。"));
-    logView_->setStyleSheet(QStringLiteral(
-        "QPlainTextEdit{background:#f7f2e8;color:#3d3025;border:1px solid #bca98b;"
-        "border-radius:7px;padding:8px;font-size:13px;}"));
     layout->addWidget(logView_, 1);
 
     auto* actions = new QHBoxLayout;

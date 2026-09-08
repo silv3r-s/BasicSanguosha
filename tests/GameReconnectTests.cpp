@@ -77,6 +77,8 @@ struct Fixture {
     }
 };
 
+void passNullificationChain(Fixture& f);
+
 void reconnectDuringPlayPhaseRestoresViewState()
 {
     Fixture f;
@@ -226,6 +228,89 @@ void reconnectDuringSelectionRestoresOptions()
     expect(waitFor([&] { return !engine.pendingCardSelection() && engine.pendingResponse(); }), "restored selection settles once and Slash continues");
 }
 
+void reconnectDuringHarvestRestoresPublicChoices()
+{
+    Fixture f;
+    auto& engine = f.server.session().testingEngine();
+    engine.players().at(1)->addCard(std::make_shared<Card>("reconnect-harvest", "Harvest", CardType::Harvest, Suit::Heart, 4));
+    expect(f.reconnecting->submit(PlayCardAction {2, "reconnect-harvest", {}}).accepted, "P2 starts Harvest before reconnect");
+    expect(waitFor([&] { return engine.harvestContext() && engine.pendingResponse(); }), "Harvest reaches its first Nullification chain");
+    passNullificationChain(f);
+    f.server.broadcastViews();
+    expect(waitFor([&] { return f.reconnecting->view().cardSelection && f.reconnecting->view().harvest
+                                && f.reconnecting->view().cardSelection->purpose == CardSelectionPurpose::Harvest; }),
+           "Harvest source receives the first public-pool selection");
+    const auto chosen = f.reconnecting->view().harvest->pool.front();
+    expect(f.reconnecting->submitCardSelection(f.reconnecting->view().cardSelection->requestId,
+                                               f.reconnecting->view().cardSelection->options.front().optionId).accepted,
+           "Harvest source completes a public choice");
+    expect(waitFor([&] { return engine.harvestContext() && engine.harvestContext()->choices.size() == 1 && engine.pendingResponse(); }),
+           "Harvest records source choice before advancing Nullification chain");
+    passNullificationChain(f);
+    f.server.broadcastViews();
+    expect(waitFor([&] { return f.observer->view().cardSelection && f.observer->view().harvest
+                                && f.observer->view().harvest->currentPicker == 3
+                                && f.observer->view().harvest->choices.size() == 1; }),
+           "next Harvest selector sees prior public choice");
+    const auto poolIds = [&] { std::vector<CardId> ids; for (const auto& card : f.observer->view().harvest->pool) ids.push_back(card.id); return ids; }();
+    f.observer->disconnectForReconnect();
+    expect(waitFor([&] { return f.server.testingReconnectReservationCount() == 1; }), "Harvest selector disconnect creates reconnect reservation");
+    f.observer->reconnectToHost();
+    expect(waitFor([&] { return f.observer->connected() && f.observer->selfPlayerId() == 3 && f.observer->view().harvest
+                                && f.observer->view().harvest->choices.size() == 1; }),
+           "reconnected Harvest selector receives public context");
+    const auto& restored = *f.observer->view().harvest;
+    std::vector<CardId> restoredPoolIds; for (const auto& card : restored.pool) restoredPoolIds.push_back(card.id);
+    expect(restored.currentPicker == 3 && restoredPoolIds == poolIds
+               && restored.choices.front().playerId == 2 && restored.choices.front().card.id == chosen.id
+               && restored.choices.front().card.type == chosen.type && restored.choices.front().card.suit == chosen.suit
+               && restored.choices.front().card.rank == chosen.rank && restored.choices.front().card.displayName == chosen.displayName,
+           "Harvest reconnect preserves pool, selector, player, card name, suit, and rank");
+    expect(std::none_of(restored.pool.begin(), restored.pool.end(), [&chosen](const auto& card) { return card.id == chosen.id; })
+               && std::none_of(f.observer->view().ownHand.begin(), f.observer->view().ownHand.end(), [&chosen](const auto& card) { return card.id == chosen.id; }),
+           "Harvest reconnect keeps chosen card out of pool without leaking it into another player's hand");
+    expect(std::any_of(f.observer->view().visibleLogs.begin(), f.observer->view().visibleLogs.end(), [](const auto& entry) {
+               return entry.find(" obtained [") != std::string::npos && entry.find(" from [Harvest].") != std::string::npos;
+           }), "Harvest reconnect restores public Battle Log choice");
+}
+
+void reconnectDuringFireAttackDiscardRestoresPublicReveal()
+{
+    Fixture f;
+    auto& engine = f.server.session().testingEngine();
+    engine.players().at(1)->addCard(std::make_shared<Card>("reconnect-fire", "Fire Attack", CardType::FireAttack, Suit::Heart, 3));
+    engine.players().at(1)->addCard(std::make_shared<Card>("reconnect-fire-match", "Slash", CardType::Slash, Suit::Spade, 7));
+    engine.players().at(2)->addCard(std::make_shared<Card>("RECONNECT_FIRE_PUBLIC", "Dodge", CardType::Dodge, Suit::Spade, 9));
+    engine.players().at(2)->addCard(std::make_shared<Card>("RECONNECT_FIRE_PRIVATE", "Peach", CardType::Peach, Suit::Heart, 12));
+    expect(f.reconnecting->submit(PlayCardAction {2, "reconnect-fire", {3}}).accepted, "P2 starts Fire Attack before reconnect");
+    expect(waitFor([&] { return engine.pendingResponse() && engine.pendingResponse()->type == ResponseType::Nullification; }),
+           "Fire Attack reaches its Nullification chain");
+    passNullificationChain(f);
+    expect(waitFor([&] { return f.observer->view().cardSelection && f.observer->view().cardSelection->purpose == CardSelectionPurpose::FireAttackReveal; }),
+           "Fire Attack target receives reveal selection");
+    const auto reveal = *f.observer->view().cardSelection;
+    const auto option = std::find_if(reveal.options.begin(), reveal.options.end(), [](const auto& item) { return item.displayName == "Dodge"; });
+    expect(option != reveal.options.end() && f.observer->submitCardSelection(reveal.requestId, option->optionId).accepted,
+           "target publishes the selected Fire Attack card");
+    expect(waitFor([&] { f.host.refresh(); return f.reconnecting->view().cardSelection && f.reconnecting->view().cardSelection->purpose == CardSelectionPurpose::FireAttackDiscard
+                                && f.observer->view().fireAttack && f.host.view().fireAttack; }),
+           "public reveal remains while source discard is pending");
+    f.observer->disconnectForReconnect();
+    expect(waitFor([&] { return f.server.testingReconnectReservationCount() == 1; }), "Fire Attack observer disconnect creates reservation");
+    f.observer->reconnectToHost();
+    expect(waitFor([&] { return f.observer->connected() && f.observer->view().fireAttack; }), "Fire Attack observer reconnects to pending public state");
+    const auto& card = f.observer->view().fireAttack->revealedCard;
+    expect(card.id == "RECONNECT_FIRE_PUBLIC" && card.type == CardType::Dodge && card.suit == Suit::Spade && card.rank == 9
+               && std::none_of(f.observer->view().ownHand.begin(), f.observer->view().ownHand.end(), [](const auto& own) { return own.id == "reconnect-fire-match"; }),
+           "reconnect preserves Fire Attack card name, suit, rank without exposing source hand");
+    expect(f.reconnecting->submitCardSelection(f.reconnecting->view().cardSelection->requestId,
+                                               f.reconnecting->view().cardSelection->options.front().optionId).accepted,
+           "source completes restored Fire Attack context");
+    f.server.broadcastViews();
+    expect(waitFor([&] { return !f.observer->view().fireAttack && !f.reconnecting->view().fireAttack; }),
+           "resolved Fire Attack clears reconnect-visible temporary reveal");
+}
+
 void selectionTimeoutWhileDisconnectedUsesFallback()
 {
     Fixture f;
@@ -253,6 +338,7 @@ void advanceToP1Play(Fixture& f)
     expect(waitFor([&] { return engine.currentPlayer()->id() == 3 && engine.currentPhase() == Phase::Play; }), "P3 receives setup turn");
     expect(f.observer->submit(EndPlayPhaseAction {3}).accepted, "P3 ends its empty setup turn");
     expect(waitFor([&] { return engine.currentPlayer()->id() == 1 && engine.currentPhase() == Phase::Play; }), "P1 receives the authored complex-flow turn");
+    expect(waitFor([&] { return !f.observer->actionPending(); }), "P3 setup action settles before later response tests");
     f.server.broadcastViews();
 }
 
@@ -516,6 +602,8 @@ int main(int argc, char** argv)
     reconnectDuringResponseRestoresRequest();
     responseTimeoutWhileDisconnectedInvalidatesOldRequest();
     reconnectDuringSelectionRestoresOptions();
+    reconnectDuringHarvestRestoresPublicChoices();
+    reconnectDuringFireAttackDiscardRestoresPublicReveal();
     selectionTimeoutWhileDisconnectedUsesFallback();
     reconnectDuringPeachRescueRestoresRequest();
     peachRescueTimeoutAndGraceRace();

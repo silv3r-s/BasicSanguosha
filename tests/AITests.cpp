@@ -38,6 +38,7 @@ void clearHand(Player& player);
 
 void aiActionPacingCoverage()
 {
+    ai::AIActionPacing::setPreset(ai::AISpeedPreset::Standard);
     PlayerViewState normal {1, 1, 1, Phase::Discard}; normal.ownHand.push_back(CardView {"slash", CardType::Slash, Suit::Spade, 7, "Slash"});
     auto critical = normal; critical.currentPhase = Phase::Play;
     auto pass = critical; pass.ownHand.clear();
@@ -55,6 +56,16 @@ void aiActionPacingCoverage()
     expect(ai::AIActionPacing::NormalActionDelayMs == 1200 && ai::AIActionPacing::CriticalActionDelayMs == 1600
                && ai::AIActionPacing::PassDelayMs == 320 && ai::AIActionPacing::TurnTransitionDelayMs == 600,
            "formal pacing constants match Stage 14A-R2 readability targets");
+    expect(ai::AIActionPacing::values(ai::AISpeedPreset::Test).normalActionMs == 0
+               && ai::AIActionPacing::values(ai::AISpeedPreset::Fast).criticalActionMs == 750
+               && ai::AIActionPacing::values(ai::AISpeedPreset::Standard).passMs == 320
+               && ai::AIActionPacing::values(ai::AISpeedPreset::Slow).turnTransitionMs == 900,
+           "all four Stage 14A-R5 AI speed profiles have authoritative pacing values");
+    for (const auto preset : {ai::AISpeedPreset::Test, ai::AISpeedPreset::Fast, ai::AISpeedPreset::Standard, ai::AISpeedPreset::Slow}) {
+        ai::AIActionPacing::setPreset(preset);
+        expect(ai::AIActionPacing::preset() == preset, "AI speed changes apply to the next scheduled action");
+    }
+    ai::AIActionPacing::setPreset(ai::AISpeedPreset::Standard);
 
     GameSession bypassSession({"AI", "Other"});
     clearHand(*bypassSession.testingEngine().players().at(0));

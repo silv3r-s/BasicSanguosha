@@ -1,11 +1,18 @@
 #include <QApplication>
+#include <QComboBox>
+#include <QDialog>
 #include <QFile>
 #include <QLabel>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QGridLayout>
 #include <QVBoxLayout>
+#include <QTimer>
+#include <QSettings>
+#include <QTemporaryDir>
 
 #include <algorithm>
 #include <cstdlib>
@@ -15,6 +22,11 @@
 #include "ui/GameText.h"
 #include "ui/BattleLogWindow.h"
 #include "ui/InteractionPanel.h"
+#include "ui/ActionReadability.h"
+#include "ui/AppSettings.h"
+#include "ui/MainWindow.h"
+#include "client/GameClientController.h"
+#include "network/GameServer.h"
 
 using namespace sanguosha;
 using namespace sanguosha::ui;
@@ -30,6 +42,32 @@ int main(int argc, char** argv)
 {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
+    QCoreApplication::setOrganizationName(QStringLiteral("BasicSanguoshaTests"));
+    QCoreApplication::setApplicationName(QStringLiteral("UXClosure"));
+
+    QTemporaryDir settingsDirectory;
+    QSettings persisted(settingsDirectory.filePath(QStringLiteral("settings.ini")), QSettings::IniFormat);
+    expect(AppSettings::readTheme(persisted) == ThemeMode::System
+               && AppSettings::readAISpeed(persisted) == ai::AISpeedPreset::Standard,
+           "theme defaults to System and AI speed defaults to Standard");
+    AppSettings::writeTheme(persisted, ThemeMode::Dark);
+    AppSettings::writeAISpeed(persisted, ai::AISpeedPreset::Slow);
+    persisted.sync();
+    QSettings reloaded(settingsDirectory.filePath(QStringLiteral("settings.ini")), QSettings::IniFormat);
+    expect(AppSettings::readTheme(reloaded) == ThemeMode::Dark
+               && AppSettings::readAISpeed(reloaded) == ai::AISpeedPreset::Slow,
+           "theme and AI speed survive a settings reload");
+    expect(AppSettings::themeLabel(ThemeMode::System) == QStringLiteral("跟随系统")
+               && AppSettings::aiSpeedLabel(ai::AISpeedPreset::Test) == QStringLiteral("测试"),
+           "settings expose the required localized labels");
+    AppSettings::applyThemeForTesting(ThemeMode::Light); const auto lightSheet = app.styleSheet();
+    AppSettings::applyThemeForTesting(ThemeMode::Dark); const auto darkSheet = app.styleSheet();
+    expect(!lightSheet.isEmpty() && !darkSheet.isEmpty() && lightSheet != darkSheet
+               && darkSheet.contains(QStringLiteral("QFrame#interactionPanel"))
+               && darkSheet.contains(QStringLiteral("QPlainTextEdit"))
+               && lightSheet.contains(QStringLiteral("#8a5900")) && lightSheet.contains(QStringLiteral("#165c9c")) && lightSheet.contains(QStringLiteral("#9d201d"))
+               && darkSheet.contains(QStringLiteral("#ffd15c")) && darkSheet.contains(QStringLiteral("#66b8ff")) && darkSheet.contains(QStringLiteral("#ff716c")),
+           "light and dark themes cover overlays, logs, cards, disabled and selected states through one application stylesheet");
 
     CardView card {"ux-slash", CardType::Slash, Suit::Spade, 7, "Slash", {}, 1, 1};
     CardButton cardButton(card);
@@ -65,6 +103,24 @@ int main(int argc, char** argv)
                && std::none_of(labels.begin(), labels.end(), [](const auto* label) { return label->toolTip().contains(QStringLiteral("JueYing")); }),
            "equipment area shows localized mount details without exposing internal names");
 
+    player.chained = true;
+    panel.setPlayer(player, true, false, true);
+    auto* chainBadge = panel.findChild<QLabel*>(QStringLiteral("chainBadge"));
+    expect(chainBadge && !chainBadge->isHidden() && chainBadge->text() == QStringLiteral("【连环】")
+               && chainBadge->toolTip().contains(QStringLiteral("属性伤害")) && panel.property("chained").toBool(),
+           "chained player has an explicit badge, tooltip, and themeable secondary status");
+    panel.setSelectable(true, true);
+    expect(panel.property("selected").toBool() && panel.property("currentPlayer").toBool()
+               && panel.property("chained").toBool(),
+           "chain status coexists with selected and current-player priority states");
+    PlayerPanel secondChainedPanel; secondChainedPanel.setPlayer(player, true, false, false);
+    expect(secondChainedPanel.property("chained").toBool()
+               && !secondChainedPanel.findChild<QLabel*>(QStringLiteral("chainBadge"))->isHidden(),
+           "multiple players can display independent chain badges simultaneously");
+    player.chained = false; panel.setPlayer(player, true, false, false);
+    expect(chainBadge->isHidden() && !panel.property("chained").toBool(),
+           "chain badge clears from authoritative state for reconnect or a second game");
+
     panel.resize(220, 150); panel.show(); app.processEvents();
     expect(panel.size().width() >= 172 && panel.minimumHeight() <= 96,
            "player panel remains readable in compact 1080p-oriented layout");
@@ -96,6 +152,83 @@ int main(int argc, char** argv)
     battleLog.clearEntries();
     expect(battleLog.logView()->toPlainText().isEmpty(), "lobby lifecycle can clear the battle log display");
 
+    ActionReadability readability;
+    readability.resize(1000, 420); readability.show(); app.processEvents();
+    readability.setTestingBypass(true);
+    PlayerViewState actionView {1, 1, 1, Phase::Play};
+    actionView.players = {{1, "AI-1", 4, 4, true, false, true, false, 3, {}}, {2, "AI-2", 3, 4, true, false, true, false, 2, {}}};
+    actionView.publicEvents = {
+        {GameEventType::CardUsed, 1, 2, "Slash", 1},
+        {GameEventType::CardResponded, 2, 1, "Dodge", 2},
+        {GameEventType::DamageReceived, 1, 2, "1", 3}};
+    readability.ingest(actionView);
+    app.processEvents();
+    expect(readability.objectName() == QStringLiteral("actionReadability") && readability.recentView()->isReadOnly()
+               && readability.recentView()->isHidden() && readability.recentView()->objectName() == QStringLiteral("recentActionModelView")
+               && readability.actionStage()->minimumHeight() >= 230 && readability.actionStage()->maximumHeight() <= 360,
+           "RecentAction data remains internal while the enlarged ActionStage is the visible center");
+    expect(readability.compactView()->isReadOnly() && readability.compactView()->minimumWidth() >= 240
+               && readability.compactView()->maximumWidth() <= 320 && readability.compactView()->verticalScrollBarPolicy() == Qt::ScrollBarAsNeeded,
+           "compact battle log has an independent bounded scroll surface");
+    expect(readability.recentView()->toPlainText().contains(QStringLiteral("AI-1 → AI-2 使用【杀】"))
+               && readability.compactView()->toPlainText().contains(QStringLiteral("AI-2 打出【闪】"))
+               && readability.compactView()->toPlainText().contains(QStringLiteral("AI-2 受到 1 点伤害")),
+           "structured events resolve card use, source, target, response, and damage summaries");
+    expect(readability.stageSource() != 0 && readability.stageTarget() != 0 && readability.stageSource() != readability.stageTarget(),
+           "ActionStage resolves the source and target line from structured events");
+    expect(readability.actionStage()->findChild<QLabel*>(QStringLiteral("actionSource"))
+               && readability.actionStage()->findChild<QLabel*>(QStringLiteral("displayCard"))
+               && readability.actionStage()->findChild<QLabel*>(QStringLiteral("actionTarget"))
+               && !readability.actionStage()->findChild<QLabel*>(QStringLiteral("actionSource"))->text().isEmpty()
+               && !readability.actionStage()->findChild<QLabel*>(QStringLiteral("actionTarget"))->text().isEmpty(),
+           "ActionStage renders a source to display-card to target route");
+    ActionReadability publicCardStage; publicCardStage.setTestingBypass(true);
+    PlayerViewState publicCardView {1, 1, 1, Phase::Play}; publicCardView.players = actionView.players;
+    GameEvent publicSlash {GameEventType::CardUsed, 1, 2, "Slash", 1}; publicSlash.card = PublicEventCard {"Slash", CardType::Slash, Suit::Spade, 7}; publicCardView.publicEvents.push_back(publicSlash);
+    publicCardStage.ingest(publicCardView); app.processEvents();
+    const auto publicCardText = publicCardStage.actionStage()->findChild<QLabel*>(QStringLiteral("displayCard"))->text();
+    expect(publicCardText.contains(QStringLiteral("杀")) && publicCardText.contains(QStringLiteral("♠"))
+               && publicCardText.contains(QStringLiteral("7")) && publicCardText.contains(QStringLiteral("基本牌")),
+           "display-only action card is driven by public name, suit, rank, and type metadata");
+    const auto beforeVerbose = readability.compactView()->toPlainText();
+    actionView.publicEvents.push_back({GameEventType::InteractionRequested, 1, 2, "selection:SECRET_CARD", 4});
+    actionView.publicEvents.push_back({GameEventType::NullificationContext, 1, 2, "Harmful:0", 5});
+    readability.ingest(actionView); app.processEvents();
+    expect(readability.compactView()->toPlainText() == beforeVerbose
+               && !readability.compactView()->toPlainText().contains(QStringLiteral("SECRET_CARD")),
+           "verbose queries and hidden identifiers never enter RecentAction or compact log");
+    actionView.harvest = HarvestView {2, {}, {{1, CardView {"public-harvest", CardType::Peach, Suit::Heart, 12, "Peach"}}}};
+    actionView.fireAttack = FireAttackView {2, CardView {"public-fire", CardType::Dodge, Suit::Diamond, 9, "Dodge"}};
+    actionView.judgment = JudgmentView {2, "indulgence", CardType::Indulgence, CardView {"public-judge", CardType::Dodge, Suit::Diamond, 9, "Dodge"}, false};
+    actionView.equipmentEffects = {{1, "朱雀羽扇", EquipmentEffectTypeView::SlashConvertedToFire, 1, 2, 0, CardType::Slash}};
+    readability.ingest(actionView); app.processEvents();
+    expect(readability.compactView()->toPlainText().contains(QStringLiteral("五谷丰登"))
+               && readability.compactView()->toPlainText().contains(QStringLiteral("火攻"))
+               && readability.compactView()->toPlainText().contains(QStringLiteral("判定"))
+               && readability.compactView()->toPlainText().contains(QStringLiteral("朱雀羽扇")),
+           "Harvest, FireAttack, judgment, and equipment public state integrate with action presentation");
+    for (std::uint64_t id = 6; id < 64; ++id) actionView.publicEvents.push_back({GameEventType::CardUsed, 1, 2, "FireAttack", id});
+    readability.ingest(actionView); app.processEvents();
+    expect(readability.recentView()->document()->blockCount() <= 40 && readability.compactView()->document()->blockCount() <= 80,
+           "RecentAction and compact log histories remain bounded");
+    auto* recentBar = readability.compactView()->verticalScrollBar(); recentBar->setValue(0); const int manualPosition = recentBar->value();
+    actionView.publicEvents.push_back({GameEventType::CardResponded, 2, 1, "Nullification", 64}); readability.ingest(actionView); app.processEvents();
+    expect(recentBar->value() == manualPosition,
+           "manual Compact Log history review prevents forced auto-scroll");
+    expect(readability.queuedCount() <= 16, "animation queue stays bounded under event bursts");
+    bool timerAdvanced = false; QTimer::singleShot(0, [&] { timerAdvanced = true; }); app.processEvents();
+    expect(timerAdvanced, "non-blocking animation leaves the Qt event loop and timers responsive");
+    readability.resetForLobby();
+    expect(readability.recentView()->toPlainText().isEmpty() && readability.compactView()->toPlainText().isEmpty()
+               && readability.queuedCount() == 0 && readability.lastConsumedEventId() == 0,
+           "Return to Lobby and second-game cleanup clear action presentation state");
+    readability.ingest(actionView, true); app.processEvents();
+    expect(readability.queuedCount() == 0 && !readability.recentView()->toPlainText().isEmpty(),
+           "reconnect restores bounded histories without replaying old animations");
+    actionView.publicEvents.push_back({GameEventType::GameEnded, 1, {}, "", 65}); readability.ingest(actionView); app.processEvents();
+    expect(readability.queuedCount() == 0 && readability.actionStage()->findChild<QLabel*>(QStringLiteral("actionStageTitle"))->text() == QStringLiteral("游戏结束"),
+           "GameOver clears stale queued actions and presents the terminal state");
+
     QWidget overlayHost; overlayHost.resize(1200, 760); auto* normalLayout = new QVBoxLayout(&overlayHost);
     auto* normalContent = new QLabel(QStringLiteral("固定主战场"), &overlayHost); normalLayout->addWidget(normalContent);
     const QSize baseHint = normalLayout->sizeHint();
@@ -124,6 +257,71 @@ int main(int argc, char** argv)
     expect(!interaction.isVisible() && interaction.candidateCount() == 0,
            "completed or cancelled interaction clears candidates and hides the panel");
 
+    network::GameServer layoutServer;
+    expect(layoutServer.setTargetPlayerCount(8) && layoutServer.startLobbyGame(),
+           "real eight-player battle screen fixture starts");
+    GameClientController layoutClient(layoutServer.session(), 1);
+    MainWindow battleWindow(layoutClient, &layoutServer);
+    battleWindow.setMinimumSize(0, 0);
+    auto* topPlayers = battleWindow.findChild<QWidget*>(QStringLiteral("topPlayers"));
+    auto* actionStage = battleWindow.findChild<QWidget*>(QStringLiteral("actionStage"));
+    auto* compactLog = battleWindow.findChild<QWidget*>(QStringLiteral("compactBattleLog"));
+    auto* localPlayer = battleWindow.findChild<QWidget*>(QStringLiteral("localPlayerPanel"));
+    auto* handBar = battleWindow.findChild<QWidget*>(QStringLiteral("handBar"));
+    auto* actionBar = battleWindow.findChild<QWidget*>(QStringLiteral("actionBar"));
+    expect(topPlayers && actionStage && compactLog && localPlayer && handBar && actionBar
+               && !battleWindow.findChild<QWidget*>(QStringLiteral("mainBattleScroll")),
+           "real battle screen exposes every required region without a main vertical scroll");
+    const auto within = [&battleWindow](QWidget* widget) {
+        const QRect area = battleWindow.centralWidget()->rect();
+        const QRect child(widget->mapTo(battleWindow.centralWidget(), QPoint(0, 0)), widget->size());
+        return area.contains(child.topLeft()) && area.contains(child.bottomRight());
+    };
+    const auto mapped = [&battleWindow](QWidget* widget) { return QRect(widget->mapTo(battleWindow.centralWidget(), QPoint(0, 0)), widget->size()); };
+    for (const QSize resolution : {QSize(1920, 1080), QSize(1920, 1200), QSize(2560, 1440)}) {
+        battleWindow.resize(resolution); battleWindow.show(); app.processEvents();
+        expect(within(topPlayers) && within(actionStage) && within(compactLog)
+                   && within(localPlayer) && within(handBar) && within(actionBar),
+               "all battle regions remain inside each supported viewport");
+        expect(!mapped(actionStage).intersects(mapped(compactLog))
+                   && !mapped(localPlayer).intersects(mapped(handBar))
+                   && !mapped(handBar).intersects(mapped(actionBar)),
+               "battle regions do not overlap at supported resolutions");
+    }
+    const auto countPlayerPanels = [](QWidget* root) { const auto children = root->findChildren<QFrame*>(); return std::count_if(children.begin(), children.end(), [](const auto* child) { return child->objectName() == QStringLiteral("playerPanel"); }); };
+    expect(countPlayerPanels(&battleWindow) == 8
+               && countPlayerPanels(topPlayers) == 7,
+           "eight-player screen uses a compact four-plus-three opponent grid and separate local panel");
+    auto* settingsButton = battleWindow.findChild<QPushButton*>(QStringLiteral("battleSettingsButton"));
+    auto* returnButton = battleWindow.findChild<QPushButton*>(QStringLiteral("returnLobbyButton"));
+    auto* logButton = battleWindow.findChild<QPushButton*>(QStringLiteral("battleLogButton"));
+    expect(settingsButton && returnButton && logButton && returnButton->text() == QStringLiteral("返回大厅"),
+           "battle toolbar contains settings, authoritative host return, and full log buttons");
+    settingsButton->click(); app.processEvents();
+    auto* settingsDialog = battleWindow.findChild<QDialog*>(QStringLiteral("battleSettingsDialog"));
+    auto* battleTheme = battleWindow.findChild<QComboBox*>(QStringLiteral("battleThemeBox"));
+    auto* battleSpeed = battleWindow.findChild<QComboBox*>(QStringLiteral("battleAISpeedBox"));
+    expect(settingsDialog && settingsDialog->isVisible() && battleTheme && battleSpeed,
+           "battle settings opens as a non-modal live panel");
+    battleTheme->setCurrentIndex(battleTheme->findData(int(ThemeMode::Light)));
+    battleSpeed->setCurrentIndex(battleSpeed->findData(int(ai::AISpeedPreset::Fast)));
+    app.processEvents();
+    expect(AppSettings::themeMode() == ThemeMode::Light && AppSettings::aiSpeedPreset() == ai::AISpeedPreset::Fast,
+           "in-game theme and AI speed selections apply immediately to their supported boundaries");
+    battleTheme->setCurrentIndex(battleTheme->findData(int(ThemeMode::System)));
+    battleSpeed->setCurrentIndex(battleSpeed->findData(int(ai::AISpeedPreset::Standard)));
+    settingsDialog->hide();
+    QTimer::singleShot(0, [] { for (auto* widget : QApplication::topLevelWidgets()) if (auto* box = qobject_cast<QMessageBox*>(widget)) if (auto* yes = box->button(QMessageBox::Yes)) yes->click(); });
+    returnButton->click(); app.processEvents();
+    expect(!layoutServer.gameStarted() && !battleWindow.findChild<QWidget*>(QStringLiteral("interactionPanel"))->isVisible()
+               && battleWindow.findChild<QPlainTextEdit*>(QStringLiteral("compactBattleLog"))->toPlainText().isEmpty(),
+           "confirmed host Return to Lobby uses the authoritative flow and clears overlay and compact history");
+    expect(layoutServer.startLobbyGame(), "a clean second game starts through the existing server lifecycle");
+    app.processEvents();
+    expect(layoutServer.gameStarted() && countPlayerPanels(topPlayers) == 7,
+           "second game rebuilds the reflowed player layout without stale widgets");
+    battleWindow.hide();
+
     QFile mainWindowSource(QStringLiteral(SANGUOSHA_SOURCE_DIR "/src/ui/MainWindow.cpp"));
     expect(mainWindowSource.open(QIODevice::ReadOnly), "main window source is available for layout contract audit");
     const QString architecture = QString::fromUtf8(mainWindowSource.readAll());
@@ -133,9 +331,25 @@ int main(int argc, char** argv)
            "main layout has a battle-log button and no permanent log column");
     expect(architecture.contains(QStringLiteral("opponentIndex / 4"))
                && architecture.contains(QStringLiteral("actionBar"))
-               && architecture.contains(QStringLiteral("mainBattleScroll"))
-               && architecture.contains(QStringLiteral("new InteractionPanel(battleScroll_->viewport())")),
-           "player grid, ActionBar, and small-window fallback scroll remain separate layout regions");
+               && architecture.contains(QStringLiteral("topPlayers"))
+               && architecture.contains(QStringLiteral("localPlayerPanel"))
+               && architecture.contains(QStringLiteral("handBar"))
+               && architecture.contains(QStringLiteral("new InteractionPanel(battleViewport_)"))
+               && !architecture.contains(QStringLiteral("mainBattleScroll")),
+           "top players, local player, hand bar, ActionBar, and overlay use a no-main-scroll battle viewport");
+    expect(architecture.contains(QStringLiteral("battleSettingsButton"))
+               && architecture.contains(QStringLiteral("returnLobbyButton"))
+               && architecture.contains(QStringLiteral("battleLogButton"))
+               && architecture.contains(QStringLiteral("battleSettingsDialog"))
+               && architecture.contains(QStringLiteral("QMessageBox::question"))
+               && architecture.contains(QStringLiteral("hostServer_->returnToLobby()")),
+           "battle toolbar exposes log, authoritative Return to Lobby, and live settings");
+    expect(architecture.contains(QStringLiteral("hostServer_ ? tr(\"返回大厅\") : tr(\"离开对局\")"))
+               && architecture.contains(QStringLiteral("if (!hostServer_) connect(returnLobbyButton_")),
+           "remote battle clients get leave behavior without host Return-to-Lobby authority");
+    expect(!architecture.contains(QStringLiteral("recentActionView"))
+               && architecture.contains(QStringLiteral("compactBattleLog")) == false,
+           "MainWindow does not add a visible RecentAction duplicate");
     for (const auto purpose : {QStringLiteral("CardSelectionPurpose::Harvest"), QStringLiteral("CardSelectionPurpose::FireAttackDiscard"),
                               QStringLiteral("CardSelectionPurpose::AxeDiscard"), QStringLiteral("CardSelectionPurpose::Dismantlement"),
                               QStringLiteral("CardSelectionPurpose::Snatch")})

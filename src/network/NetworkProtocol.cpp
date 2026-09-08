@@ -17,6 +17,7 @@ std::vector<PlayerId> idsFromJson(const QJsonArray& a) { std::vector<PlayerId> i
 constexpr int kEquipmentEffectTypeCount = 8;
 bool isEquipmentEffectType(int value) { return value >= 0 && value < kEquipmentEffectTypeCount; }
 bool isCardType(int value) { return value >= int(CardType::Slash) && value <= int(CardType::DefensiveHorse); }
+bool isSuit(int value) { return value >= int(Suit::Spade) && value <= int(Suit::Diamond); }
 std::optional<std::uint64_t> eventIdFromJson(const QJsonValue& value)
 {
     // QJsonValue stores JSON numbers as doubles, which cannot preserve every
@@ -47,7 +48,7 @@ QJsonObject encodeViewState(const PlayerViewState& v)
     o["players"]=ps;
     if(v.response){const auto&r=*v.response;o["response"]=QJsonObject{{"type",int(r.type)},{"request",qint64(r.requestId)},{"requester",r.requester},{"responder",r.responder},{"isResponder",r.isResponder},{"decline",r.allowDecline},{"cards",cardsToJson(r.selectableCards)},{"prompt",QString::fromStdString(r.prompt)},{"target",r.targetId}};}
     if(v.cardSelection){const auto&s=*v.cardSelection;QJsonArray options;for(const auto& x:s.options) { QJsonObject option{{"id",qint64(x.optionId)},{"zone",int(x.zone)},{"hidden",x.hidden},{"name",QString::fromStdString(x.displayName)},{"slot",x.equipmentSlot?int(*x.equipmentSlot):-1}}; if(x.cardType) option["cardType"] = int(*x.cardType); options.append(option); } o["selection"]=QJsonObject{{"request",qint64(s.requestId)},{"purpose",int(s.purpose)},{"target",s.targetId},{"min",s.minCount},{"max",s.maxCount},{"prompt",QString::fromStdString(s.prompt)},{"options",options}};}
-    if(v.harvest)o["harvest"]=QJsonObject{{"picker",v.harvest->currentPicker},{"pool",cardsToJson(v.harvest->pool)}};
+    if(v.harvest){QJsonArray choices;for(const auto& choice:v.harvest->choices)choices.append(QJsonObject{{"player",choice.playerId},{"card",cardToJson(choice.card)}});o["harvest"]=QJsonObject{{"picker",v.harvest->currentPicker},{"pool",cardsToJson(v.harvest->pool)},{"choices",choices}};}
     if(v.judgment){const auto&j=*v.judgment;o["judgmentResult"]=QJsonObject{{"player",j.playerId},{"trick",QString::fromStdString(j.delayedTrickId)},{"trickType",int(j.delayedTrickType)},{"card",cardToJson(j.card)},{"success",j.succeeded}};}
     if(v.fireAttack)o["fireAttack"]=QJsonObject{{"target",v.fireAttack->targetId},{"card",cardToJson(v.fireAttack->revealedCard)}};
     if(v.nullification){const auto& n=*v.nullification; QJsonObject context{{"source",n.sourceId},{"trickType",int(n.trickType)},{"round",n.chainRound}}; if(n.targetId) context["target"] = *n.targetId; o["nullification"] = context;}
@@ -58,6 +59,15 @@ QJsonObject encodeViewState(const PlayerViewState& v)
                                              {"value", event.value}, {"relatedCard", int(event.relatedCard)}});
     }
     o["equipmentEffects"] = equipmentEffects;
+    QJsonArray publicEvents;
+    for (const auto& event : v.publicEvents) {
+        QJsonObject value{{"id", QString::number(qulonglong(event.eventId))}, {"type", int(event.type)}, {"detail", QString::fromStdString(event.detail)}};
+        if (event.source) value["source"] = *event.source;
+        if (event.target) value["target"] = *event.target;
+        if (event.card) value["card"] = QJsonObject {{"name", QString::fromStdString(event.card->displayName)}, {"type", int(event.card->type)}, {"suit", int(event.card->suit)}, {"rank", event.card->rank}};
+        publicEvents.append(value);
+    }
+    o["publicEvents"] = publicEvents;
     QJsonArray logs;for(const auto& x:v.visibleLogs)logs.append(QString::fromStdString(x));o["logs"]=logs;return o;
 }
 
@@ -89,7 +99,7 @@ std::optional<PlayerViewState> decodeViewState(const QJsonObject& o)
     for (const auto& id : o["winningPlayers"].toArray()) v.winningPlayers.push_back(id.toInt()); if (o.contains("winner")) v.winner = o["winner"].toInt();
     if (o.contains("response")) { const auto r = o["response"].toObject(); const auto cards = cardsFromJson(r["cards"].toArray()); if (!cards) return {}; v.response = ResponseView{ResponseType(r["type"].toInt()), uint64_t(r["request"].toInteger()), r["requester"].toInt(), r["responder"].toInt(), r["isResponder"].toBool(), r["decline"].toBool(), *cards, r["prompt"].toString().toStdString(), r["target"].toInt()}; }
     if (o.contains("selection")) { const auto s = o["selection"].toObject(); CardSelectionView selection{uint64_t(s["request"].toInteger()), CardSelectionPurpose(s["purpose"].toInt()), s["target"].toInt(), s["min"].toInt(1), s["max"].toInt(1), {}, s["prompt"].toString().toStdString()}; for (const auto& value : s["options"].toArray()) { const auto option = value.toObject(); const int slot = option["slot"].toInt(-1); std::optional<CardType> cardType; if (option.contains("cardType")) { if (!option["cardType"].isDouble()) return {}; cardType = CardType(option["cardType"].toInt()); } selection.options.push_back({uint64_t(option["id"].toInteger()), CardZone(option["zone"].toInt()), slot < 0 ? std::nullopt : std::optional<EquipmentSlot>(EquipmentSlot(slot)), option["hidden"].toBool(), option["name"].toString().toStdString(), cardType}); } v.cardSelection = std::move(selection); }
-    if (o.contains("harvest")) { const auto harvest = o["harvest"].toObject(); const auto pool = cardsFromJson(harvest["pool"].toArray()); if (!pool) return {}; v.harvest = HarvestView{harvest["picker"].toInt(), *pool}; }
+    if (o.contains("harvest")) { const auto harvest = o["harvest"].toObject(); const auto pool = cardsFromJson(harvest["pool"].toArray()); if (!pool) return {}; HarvestView view{harvest["picker"].toInt(), *pool, {}}; if (harvest.contains("choices")) { if (!harvest["choices"].isArray()) return {}; for (const auto& value : harvest["choices"].toArray()) { if (!value.isObject()) return {}; const auto choice = value.toObject(); if (!choice["player"].isDouble() || !choice["card"].isObject()) return {}; const auto card = cardFromJson(choice["card"].toObject()); if (!card) return {}; view.choices.push_back(HarvestChoiceView {choice["player"].toInt(), *card}); } } v.harvest = std::move(view); }
     if (o.contains("judgmentResult")) { const auto j = o["judgmentResult"].toObject(); const auto card = cardFromJson(j["card"].toObject()); if (!card) return {}; v.judgment = JudgmentView {j["player"].toInt(), j["trick"].toString().toStdString(), CardType(j["trickType"].toInt()), *card, j["success"].toBool()}; }
     if (o.contains("fireAttack")) { const auto fire = o["fireAttack"].toObject(); const auto card = cardFromJson(fire["card"].toObject()); if (!card) return {}; v.fireAttack = FireAttackView {fire["target"].toInt(), *card}; }
     if (o.contains("nullification")) { const auto n = o["nullification"].toObject(); if (!n["source"].isDouble() || !n["trickType"].isDouble() || !n["round"].isDouble()) return {}; NullificationContextView context {n["source"].toInt(), CardType(n["trickType"].toInt()), {}, n["round"].toInt()}; if (n.contains("target")) { if (!n["target"].isDouble()) return {}; context.targetId = n["target"].toInt(); } v.nullification = context; }
@@ -115,6 +125,26 @@ std::optional<PlayerViewState> decodeViewState(const QJsonObject& o)
                                event["owner"].toInt(), event["target"].toInt(), event["value"].toInt(), CardType(relatedCard)});
         }
         v.equipmentEffects = std::move(effects);
+    }
+    if (o.contains("publicEvents")) {
+        if (!o["publicEvents"].isArray()) return {};
+        for (const auto& value : o["publicEvents"].toArray()) {
+            if (!value.isObject()) return {};
+            const auto event = value.toObject();
+            const auto id = eventIdFromJson(event["id"]);
+            if (!id || !event["type"].isDouble() || !event["detail"].isString()) return {};
+            GameEvent decoded {GameEventType(event["type"].toInt()), {}, {}, event["detail"].toString().toStdString(), *id};
+            if (event.contains("source")) decoded.source = event["source"].toInt();
+            if (event.contains("target")) decoded.target = event["target"].toInt();
+            if (event.contains("card")) {
+                if (!event["card"].isObject()) return {};
+                const auto card = event["card"].toObject();
+                if (!card["name"].isString() || !card["type"].isDouble() || !card["suit"].isDouble() || !card["rank"].isDouble()
+                    || !isCardType(card["type"].toInt()) || !isSuit(card["suit"].toInt()) || card["rank"].toInt() < 1 || card["rank"].toInt() > 13) return {};
+                decoded.card = PublicEventCard {card["name"].toString().toStdString(), CardType(card["type"].toInt()), Suit(card["suit"].toInt()), card["rank"].toInt()};
+            }
+            v.publicEvents.push_back(std::move(decoded));
+        }
     }
     for (const auto& entry : o["logs"].toArray()) v.visibleLogs.push_back(entry.toString().toStdString());
     return v;

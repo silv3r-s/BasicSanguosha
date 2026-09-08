@@ -334,6 +334,9 @@ PlayerViewState GameSession::buildViewFor(PlayerId viewer) const
     if (const auto& harvest = engine_.harvestContext()) {
         HarvestView publicHarvest; publicHarvest.currentPicker = harvest->currentTargetIndex < harvest->targetOrder.size() ? harvest->targetOrder[harvest->currentTargetIndex] : 0;
         for (const auto& card : harvest->pool) publicHarvest.pool.push_back(makeCardView(*card));
+        for (const auto& choice : harvest->choices) {
+            if (choice.card) publicHarvest.choices.push_back(HarvestChoiceView {choice.playerId, makeCardView(*choice.card)});
+        }
         view.harvest = std::move(publicHarvest);
     }
     if (const auto& judgment = engine_.latestJudgment(); judgment && judgment->judgmentCard) {

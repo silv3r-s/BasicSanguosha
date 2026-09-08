@@ -369,6 +369,8 @@ QString logEntryToDisplay(const std::string &entry)
     static const QRegularExpression lightningPassed("^\\[Lightning\\] passed to (.+)\\.$");
     static const QRegularExpression ironChainState("^(.+) was (chained|unchained) by \\[Iron Chain\\]\\.$");
     static const QRegularExpression fireReveal("^(.+) revealed a hand card for \\[Fire Attack\\]\\.$");
+    static const QRegularExpression fireRevealCard("^(.+) revealed \\[(.+)\\] (Spade|Heart|Club|Diamond) (\\d+) for \\[Fire Attack\\]\\.$");
+    static const QRegularExpression harvestChoice("^(.+) obtained \\[(.+)\\] (Spade|Heart|Club|Diamond) (\\d+) from \\[Harvest\\]\\.$");
     static const QRegularExpression aoeWaiting("^Waiting for (.+) to respond to AOE\\.$");
     static const QRegularExpression aoeFailed("^(.+) failed to respond to AOE\\.$");
     static const QRegularExpression timedOut("^(.+) timed out (while responding|while selecting a card|in Play phase|in Discard phase)\\.$");
@@ -429,6 +431,16 @@ QString logEntryToDisplay(const std::string &entry)
     if ((match = lightningPassed.match(text)).hasMatch()) return QStringLiteral("【闪电】传递给%1。").arg(displayPlayer(match.captured(1)));
     if ((match = ironChainState.match(text)).hasMatch()) return QStringLiteral("%1%2。").arg(displayPlayer(match.captured(1)), match.captured(2) == "chained" ? QStringLiteral("被横置") : QStringLiteral("解除横置状态"));
     if ((match = fireReveal.match(text)).hasMatch()) return QStringLiteral("%1为【火攻】展示了一张手牌。").arg(displayPlayer(match.captured(1)));
+    if ((match = fireRevealCard.match(text)).hasMatch()) {
+        const auto suit = match.captured(3) == "Spade" ? QStringLiteral("♠") : match.captured(3) == "Heart" ? QStringLiteral("♥") : match.captured(3) == "Club" ? QStringLiteral("♣") : QStringLiteral("♦");
+        return QStringLiteral("%1 为【火攻】展示【%2 %3%4】。")
+            .arg(displayPlayer(match.captured(1)), cardName(match.captured(2)), suit, rankToDisplayName(match.captured(4).toInt()));
+    }
+    if ((match = harvestChoice.match(text)).hasMatch()) {
+        const auto suit = match.captured(3) == "Spade" ? QStringLiteral("♠") : match.captured(3) == "Heart" ? QStringLiteral("♥") : match.captured(3) == "Club" ? QStringLiteral("♣") : QStringLiteral("♦");
+        return QStringLiteral("%1 从【五谷丰登】获得【%2 %3%4】。")
+            .arg(displayPlayer(match.captured(1)), cardName(match.captured(2)), suit, rankToDisplayName(match.captured(4).toInt()));
+    }
     if ((match = aoeWaiting.match(text)).hasMatch()) return QStringLiteral("等待%1响应当前群体锦囊。").arg(displayPlayer(match.captured(1)));
     if ((match = aoeFailed.match(text)).hasMatch()) return QStringLiteral("%1未能响应群体锦囊，将受到伤害。").arg(displayPlayer(match.captured(1)));
     if ((match = timedOut.match(text)).hasMatch()) return QStringLiteral("%1%2超时，服务器已按规则处理。").arg(displayPlayer(match.captured(1)), match.captured(2) == "while responding" ? QStringLiteral("响应") : match.captured(2) == "while selecting a card" ? QStringLiteral("选牌") : match.captured(2) == "in Play phase" ? QStringLiteral("出牌阶段") : QStringLiteral("弃牌阶段"));

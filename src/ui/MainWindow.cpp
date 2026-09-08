@@ -4,6 +4,9 @@
 #include <QHBoxLayout>
 #include <QGridLayout>
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
 #include <QEvent>
 #include <QLabel>
 #include <QMessageBox>
@@ -22,7 +25,9 @@
 #include "ui/GameText.h"
 #include "ui/GameWidgets.h"
 #include "ui/BattleLogWindow.h"
+#include "ui/AppSettings.h"
 #include "ui/InteractionPanel.h"
+#include "ui/ActionReadability.h"
 
 namespace sanguosha::ui {
 namespace {
@@ -48,6 +53,22 @@ QString playerNameFor(const PlayerViewState& view, PlayerId id)
 {
     const auto found = std::find_if(view.players.begin(), view.players.end(), [id](const auto& player) { return player.id == id; });
     return found == view.players.end() ? QObject::tr("玩家 %1").arg(id) : playerName(*found);
+}
+QString recentHarvestChoices(const PlayerViewState& view)
+{
+    if (!view.harvest || view.harvest->choices.empty()) return {};
+    QStringList lines;
+    const auto& choices = view.harvest->choices;
+    const auto first = choices.size() > 3 ? choices.size() - 3 : 0;
+    for (std::size_t index = first; index < choices.size(); ++index) {
+        const auto& choice = choices[index];
+        lines << QObject::tr("%1 → %2").arg(playerNameFor(view, choice.playerId), cardLabel(choice.card));
+    }
+    return QObject::tr("最近选择：%1").arg(lines.join(QStringLiteral("；")));
+}
+QString harvestChoiceEvent(const PlayerViewState& view, const HarvestChoiceView& choice)
+{
+    return QObject::tr("%1 从【五谷丰登】获得%2").arg(playerNameFor(view, choice.playerId), cardLabel(choice.card));
 }
 void clearLayout(QLayout* layout) { while (auto* item = layout->takeAt(0)) { delete item->widget(); delete item; } }
 QString cardTooltip(const CardView& c) { Card card(c.id, c.displayName, c.type, c.suit, c.rank); return QString("%1\n%2 %3\n%4\n%5").arg(cardName(c), suitToSymbol(c.suit), rankToDisplayName(c.rank), cardCategoryDisplayName(c.type), cardDescription(card)); }
@@ -92,45 +113,63 @@ QString selectionPrompt(CardSelectionPurpose purpose)
 MainWindow::MainWindow(IGameClient& client, network::GameServer* hostServer, std::function<void()> leaveRoom, QWidget* parent) : QMainWindow(parent), client_(client), hostServer_(hostServer), leaveRoom_(std::move(leaveRoom))
 {
     setWindowTitle(tr("基础三国杀 - 玩家 %1").arg(client_.selfPlayerId())); resize(1280, 820); setMinimumSize(960, 700);
-    setStyleSheet(QStringLiteral("QMainWindow{background:#e8e1d5;} QLabel{font-size:13px;} QPushButton{min-height:30px;padding:4px 10px;}"));
     auto* central = new QWidget(this); auto* rootLayout = new QVBoxLayout(central);
     pages_ = new QStackedWidget(central); lobbyPage_ = new QWidget(pages_); gamePage_ = new QWidget(pages_);
     auto* lobbyLayout = new QVBoxLayout(lobbyPage_); auto* layout = new QVBoxLayout(gamePage_);
     layout->setContentsMargins(12, 10, 12, 10); layout->setSpacing(7);
     pages_->addWidget(lobbyPage_); pages_->addWidget(gamePage_); pages_->setCurrentWidget(lobbyPage_); rootLayout->addWidget(pages_);
     auto* lobbyTitle = new QLabel(tr("基础三国杀"), lobbyPage_); lobbyTitle->setStyleSheet("font-size:22px;font-weight:600;"); lobbyLayout->addWidget(lobbyTitle);
-    lobbyStatusLabel_ = new QLabel(lobbyPage_); lobbyStatusLabel_->setStyleSheet("padding:8px;background:#eef3f8;border-radius:6px;"); lobbyStatusLabel_->setWordWrap(true); lobbyLayout->addWidget(lobbyStatusLabel_);
+    lobbyStatusLabel_ = new QLabel(lobbyPage_); lobbyStatusLabel_->setObjectName(QStringLiteral("lobbyStatus")); lobbyStatusLabel_->setWordWrap(true); lobbyLayout->addWidget(lobbyStatusLabel_);
+    auto* settingsRow = new QWidget(lobbyPage_); settingsRow->setObjectName(QStringLiteral("settingsRow")); auto* settingsLayout = new QHBoxLayout(settingsRow);
+    settingsLayout->addWidget(new QLabel(tr("主题："), settingsRow)); themeBox_ = new QComboBox(settingsRow);
+    for (const auto mode : {ThemeMode::System, ThemeMode::Light, ThemeMode::Dark}) themeBox_->addItem(AppSettings::themeLabel(mode), int(mode));
+    themeBox_->setCurrentIndex(themeBox_->findData(int(AppSettings::themeMode()))); settingsLayout->addWidget(themeBox_);
+    settingsLayout->addWidget(new QLabel(tr("AI 节奏："), settingsRow)); aiSpeedBox_ = new QComboBox(settingsRow);
+    for (const auto speed : {ai::AISpeedPreset::Test, ai::AISpeedPreset::Fast, ai::AISpeedPreset::Standard, ai::AISpeedPreset::Slow}) aiSpeedBox_->addItem(AppSettings::aiSpeedLabel(speed), int(speed));
+    aiSpeedBox_->setCurrentIndex(aiSpeedBox_->findData(int(AppSettings::aiSpeedPreset()))); settingsLayout->addWidget(aiSpeedBox_); settingsLayout->addStretch(); lobbyLayout->addWidget(settingsRow);
+    connect(themeBox_, &QComboBox::currentIndexChanged, this, [this] { AppSettings::setThemeMode(ThemeMode(themeBox_->currentData().toInt())); });
+    connect(aiSpeedBox_, &QComboBox::currentIndexChanged, this, [this] { AppSettings::setAISpeedPreset(ai::AISpeedPreset(aiSpeedBox_->currentData().toInt())); });
     auto* header = new QHBoxLayout;
-    auto* title = new QLabel(tr("基础三国杀"), gamePage_); title->setStyleSheet("font-size:21px;font-weight:700;color:#472d20;"); header->addWidget(title);
-    modeLabel_ = new QLabel(gamePage_); modeLabel_->setStyleSheet("color:#715b47;font-weight:600;"); header->addWidget(modeLabel_); header->addStretch();
+    auto* title = new QLabel(tr("基础三国杀"), gamePage_); title->setStyleSheet("font-size:21px;font-weight:700;"); header->addWidget(title);
+    modeLabel_ = new QLabel(gamePage_); modeLabel_->setStyleSheet("font-weight:600;"); header->addWidget(modeLabel_); header->addStretch();
     battleLogButton_ = new QPushButton(tr("对战日志"), gamePage_); battleLogButton_->setObjectName(QStringLiteral("battleLogButton")); header->addWidget(battleLogButton_);
-    returnLobbyButton_ = new QPushButton(tr("结束游戏并返回大厅"), gamePage_); returnLobbyButton_->setVisible(false); header->addWidget(returnLobbyButton_); layout->addLayout(header);
+    returnLobbyButton_ = new QPushButton(hostServer_ ? tr("返回大厅") : tr("离开对局"), gamePage_); returnLobbyButton_->setObjectName(QStringLiteral("returnLobbyButton")); header->addWidget(returnLobbyButton_);
+    settingsButton_ = new QPushButton(tr("设置"), gamePage_); settingsButton_->setObjectName(QStringLiteral("battleSettingsButton")); header->addWidget(settingsButton_); layout->addLayout(header);
     battleLogWindow_ = new BattleLogWindow(this);
     connect(battleLogButton_, &QPushButton::clicked, this, [this] { battleLogWindow_->show(); battleLogWindow_->raise(); battleLogWindow_->activateWindow(); });
+    settingsDialog_ = new QDialog(this); settingsDialog_->setObjectName(QStringLiteral("battleSettingsDialog")); settingsDialog_->setWindowTitle(tr("对局设置")); settingsDialog_->setModal(false); settingsDialog_->setMinimumWidth(330); auto* settingsForm = new QFormLayout(settingsDialog_);
+    auto* battleTheme = new QComboBox(settingsDialog_); battleTheme->setObjectName(QStringLiteral("battleThemeBox")); for (const auto mode : {ThemeMode::System, ThemeMode::Light, ThemeMode::Dark}) battleTheme->addItem(AppSettings::themeLabel(mode), int(mode)); settingsForm->addRow(tr("主题："), battleTheme);
+    auto* battleSpeed = new QComboBox(settingsDialog_); battleSpeed->setObjectName(QStringLiteral("battleAISpeedBox")); for (const auto speed : {ai::AISpeedPreset::Test, ai::AISpeedPreset::Fast, ai::AISpeedPreset::Standard, ai::AISpeedPreset::Slow}) battleSpeed->addItem(AppSettings::aiSpeedLabel(speed), int(speed)); settingsForm->addRow(tr("AI 节奏："), battleSpeed); auto* speedHint = new QLabel(tr("节奏变更从下一次 AI 行动开始生效。"), settingsDialog_); speedHint->setWordWrap(true); settingsForm->addRow(QString(), speedHint);
+    auto* closeSettings = new QDialogButtonBox(QDialogButtonBox::Close, settingsDialog_); settingsForm->addRow(closeSettings); connect(closeSettings, &QDialogButtonBox::rejected, settingsDialog_, &QDialog::hide);
+    connect(battleTheme, &QComboBox::currentIndexChanged, this, [battleTheme] { AppSettings::setThemeMode(ThemeMode(battleTheme->currentData().toInt())); }); connect(battleSpeed, &QComboBox::currentIndexChanged, this, [battleSpeed] { AppSettings::setAISpeedPreset(ai::AISpeedPreset(battleSpeed->currentData().toInt())); });
+    connect(settingsButton_, &QPushButton::clicked, this, [this, battleTheme, battleSpeed] { battleTheme->setCurrentIndex(battleTheme->findData(int(AppSettings::themeMode()))); battleSpeed->setCurrentIndex(battleSpeed->findData(int(AppSettings::aiSpeedPreset()))); settingsDialog_->show(); settingsDialog_->raise(); settingsDialog_->activateWindow(); });
     if (hostServer_) { lobbySection_ = new QWidget(lobbyPage_); auto* lobby = new QHBoxLayout(lobbySection_); lobby->addWidget(new QLabel(tr("总人数："), lobbySection_)); playerCountBox_ = new QComboBox(lobbySection_); for (int i = 2; i <= 8; ++i) playerCountBox_->addItem(QString::number(i), i); lobby->addWidget(playerCountBox_); lobbySummaryLabel_ = new QLabel(lobbySection_); lobby->addWidget(lobbySummaryLabel_); addAIButton_ = new QPushButton(tr("添加 AI"), lobbySection_); removeAIButton_ = new QPushButton(tr("移除 AI"), lobbySection_); lobby->addWidget(addAIButton_); lobby->addWidget(removeAIButton_); startGameButton_ = new QPushButton(tr("开始游戏"), lobbySection_); lobby->addWidget(startGameButton_); leaveRoomButton_ = new QPushButton(tr("离开房间"), lobbySection_); lobby->addWidget(leaveRoomButton_); lobby->addStretch(); lobbyLayout->addWidget(lobbySection_); lobbyLayout->addStretch(); playerCountBox_->setCurrentText(QString::number(hostServer_->targetPlayerCount())); connect(playerCountBox_, &QComboBox::currentIndexChanged, this, [this] { const int value = playerCountBox_->currentData().toInt(); if (!hostServer_->setTargetPlayerCount(value)) { playerCountBox_->setCurrentText(QString::number(hostServer_->targetPlayerCount())); lobbyStatusLabel_->setText(tr("当前真人数量超过所选总人数。")); } refresh(); }); connect(addAIButton_, &QPushButton::clicked, this, [this] { hostServer_->addAI(); refresh(); }); connect(removeAIButton_, &QPushButton::clicked, this, [this] { hostServer_->removeAI(); refresh(); }); connect(startGameButton_, &QPushButton::clicked, this, [this] { if (!hostServer_->startLobbyGame()) { lobbyStatusLabel_->setText(tr("无法开始游戏。")); return; } refresh(); }); connect(returnLobbyButton_, &QPushButton::clicked, this, [this] { if (QMessageBox::question(this, tr("返回大厅"), tr("确定结束当前对局并返回大厅吗？")) == QMessageBox::Yes) hostServer_->returnToLobby(); }); connect(hostServer_, &network::GameServer::stateChanged, this, &MainWindow::refresh); } else { leaveRoomButton_ = new QPushButton(tr("离开房间"), lobbyPage_); lobbyLayout->addWidget(leaveRoomButton_); lobbyLayout->addStretch(); }
     if (leaveRoomButton_) connect(leaveRoomButton_, &QPushButton::clicked, this, [this] { if (leaveRoom_) leaveRoom_(); });
-    auto* tableColumn = new QVBoxLayout; tableColumn->setSpacing(7);
-    auto* opponents = new QWidget(gamePage_); opponents->setObjectName(QStringLiteral("opponentsGrid")); opponentsLayout_ = new QGridLayout(opponents); opponentsLayout_->setContentsMargins(0,0,0,0); opponentsLayout_->setSpacing(6); tableColumn->addWidget(opponents);
+    if (!hostServer_) connect(returnLobbyButton_, &QPushButton::clicked, this, [this] { if (QMessageBox::question(this, tr("离开对局"), tr("确定离开当前对局吗？")) == QMessageBox::Yes && leaveRoom_) leaveRoom_(); });
+    battleViewport_ = new QWidget(gamePage_); battleViewport_->setObjectName(QStringLiteral("battleViewport")); auto* tableColumn = new QVBoxLayout(battleViewport_); tableColumn->setContentsMargins(0,0,0,0); tableColumn->setSpacing(6);
+    auto* opponents = new QWidget(battleViewport_); opponents->setObjectName(QStringLiteral("topPlayers")); opponents->setMaximumHeight(306); opponentsLayout_ = new QGridLayout(opponents); opponentsLayout_->setContentsMargins(0,0,0,0); opponentsLayout_->setSpacing(6); tableColumn->addWidget(opponents, 0);
     auto* state = new QHBoxLayout; turnLabel_ = new QLabel(gamePage_); phaseLabel_ = new QLabel(gamePage_); timeoutLabel_ = new QLabel(gamePage_);
-    phaseLabel_->setObjectName(QStringLiteral("phaseBanner")); phaseLabel_->setStyleSheet("font-size:18px;font-weight:700;color:#7b251b;padding:7px;background:#fff4d8;border-radius:7px;");
-    timeoutLabel_->setStyleSheet("font-weight:600;color:#8b2020;"); state->addWidget(phaseLabel_, 1); state->addWidget(turnLabel_); state->addWidget(timeoutLabel_); tableColumn->addLayout(state);
+    phaseLabel_->setObjectName(QStringLiteral("phaseBanner"));
+    timeoutLabel_->setStyleSheet("font-weight:600;"); state->addWidget(phaseLabel_, 1); state->addWidget(turnLabel_); state->addWidget(timeoutLabel_);
     actionBanner_ = new QLabel(tr("等待对局开始"), gamePage_); actionBanner_->setObjectName(QStringLiteral("actionBanner")); actionBanner_->setWordWrap(true);
-    actionBanner_->setStyleSheet("font-size:16px;font-weight:700;padding:9px;background:#3f3026;color:#fff7e8;border-radius:8px;"); tableColumn->addWidget(actionBanner_);
-    judgmentResultLabel_ = new QLabel(gamePage_); judgmentResultLabel_->setStyleSheet("padding:7px;background:#fff1d6;border-radius:6px;font-weight:600;"); judgmentResultLabel_->setWordWrap(true); judgmentResultLabel_->setVisible(false); tableColumn->addWidget(judgmentResultLabel_);
-    equipmentEffectLabel_ = new QLabel(gamePage_); equipmentEffectLabel_->setStyleSheet("padding:7px;background:#edf8e9;border-radius:6px;font-weight:600;"); equipmentEffectLabel_->setWordWrap(true); equipmentEffectLabel_->setVisible(false); tableColumn->addWidget(equipmentEffectLabel_);
-    instructionLabel_ = new QLabel(gamePage_); instructionLabel_->setWordWrap(true); instructionLabel_->setStyleSheet("font-weight:600;color:#2f4055;padding:6px;background:#edf3f8;border-radius:6px;"); tableColumn->addWidget(instructionLabel_);
-    auto* selfPanel = new QWidget(gamePage_); selfPanelLayout_ = new QHBoxLayout(selfPanel); selfPanelLayout_->setContentsMargins(0,0,0,0); tableColumn->addWidget(selfPanel);
-    auto* handTitle = new QLabel(tr("我的手牌"), gamePage_); handTitle->setStyleSheet("font-size:16px;font-weight:700;"); tableColumn->addWidget(handTitle);
-    auto* handWidget = new QWidget(gamePage_); handLayout_ = new QHBoxLayout(handWidget); handLayout_->setContentsMargins(8,6,8,6); handLayout_->setSpacing(7);
-    auto* scroll = new QScrollArea(gamePage_); scroll->setWidgetResizable(true); scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded); scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff); scroll->setWidget(handWidget); scroll->setMinimumHeight(155); scroll->setMaximumHeight(165); tableColumn->addWidget(scroll);
-    auto* actionBar = new QWidget(gamePage_); actionBar->setObjectName(QStringLiteral("actionBar")); auto* actions = new QHBoxLayout(actionBar); actions->setContentsMargins(0,0,0,0);
+    actionBanner_->setMaximumWidth(520); state->addWidget(actionBanner_, 2); tableColumn->addLayout(state);
+    actionReadability_ = new ActionReadability(battleViewport_); tableColumn->addWidget(actionReadability_, 1);
+    judgmentResultLabel_ = new QLabel(battleViewport_); judgmentResultLabel_->setObjectName(QStringLiteral("judgmentResult")); judgmentResultLabel_->setWordWrap(true); judgmentResultLabel_->setVisible(false); judgmentResultLabel_->setMaximumHeight(48);
+    equipmentEffectLabel_ = new QLabel(battleViewport_); equipmentEffectLabel_->setObjectName(QStringLiteral("equipmentEffect")); equipmentEffectLabel_->setWordWrap(true); equipmentEffectLabel_->setVisible(false); equipmentEffectLabel_->setMaximumHeight(48);
+    auto* effectStrip = new QHBoxLayout; effectStrip->addWidget(judgmentResultLabel_); effectStrip->addWidget(equipmentEffectLabel_); tableColumn->addLayout(effectStrip);
+    instructionLabel_ = new QLabel(battleViewport_); instructionLabel_->setObjectName(QStringLiteral("instructionModel")); instructionLabel_->hide();
+    auto* bottom = new QHBoxLayout; bottom->setSpacing(8);
+    auto* selfPanel = new QWidget(battleViewport_); selfPanel->setObjectName(QStringLiteral("localPlayerPanel")); selfPanel->setMinimumWidth(310); selfPanel->setMaximumWidth(390); selfPanelLayout_ = new QHBoxLayout(selfPanel); selfPanelLayout_->setContentsMargins(0,0,0,0); bottom->addWidget(selfPanel, 0);
+    auto* handBar = new QWidget(battleViewport_); handBar->setObjectName(QStringLiteral("handBar")); auto* handColumn = new QVBoxLayout(handBar); handColumn->setContentsMargins(0,0,0,0); handColumn->setSpacing(3); auto* handTitle = new QLabel(tr("我的手牌"), handBar); handTitle->setStyleSheet("font-size:16px;font-weight:700;"); handColumn->addWidget(handTitle);
+    auto* handWidget = new QWidget(handBar); handLayout_ = new QHBoxLayout(handWidget); handLayout_->setContentsMargins(8,6,8,6); handLayout_->setSpacing(7);
+    auto* scroll = new QScrollArea(handBar); scroll->setObjectName(QStringLiteral("handScroll")); scroll->setWidgetResizable(true); scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded); scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff); scroll->setWidget(handWidget); scroll->setMinimumHeight(150); scroll->setMaximumHeight(170); handColumn->addWidget(scroll); bottom->addWidget(handBar, 1);
+    auto* actionBar = new QWidget(battleViewport_); actionBar->setObjectName(QStringLiteral("actionBar")); actionBar->setMinimumWidth(190); actionBar->setMaximumWidth(230); auto* actions = new QVBoxLayout(actionBar); actions->setContentsMargins(0,0,0,0);
     confirmUseButton_ = new QPushButton(tr("确认使用"), actionBar); cancelSelectionButton_ = new QPushButton(tr("取消选择"), actionBar); serpentSpearButton_ = new QPushButton(tr("丈八蛇矛：两张手牌当【杀】"), actionBar); endPlayButton_ = new QPushButton(tr("结束出牌阶段"), actionBar); declineButton_ = new QPushButton(tr("不出"), actionBar); restartButton_ = new QPushButton(tr("重新开始"), actionBar);
-    confirmUseButton_->setObjectName(QStringLiteral("primaryAction")); confirmUseButton_->setStyleSheet("QPushButton#primaryAction{background:#a83226;color:white;font-weight:700;border-radius:6px;} QPushButton#primaryAction:disabled{background:#aaa;color:#ddd;}");
-    actions->addWidget(confirmUseButton_); actions->addWidget(cancelSelectionButton_); actions->addWidget(serpentSpearButton_); actions->addWidget(endPlayButton_); actions->addWidget(declineButton_); actions->addStretch(); actions->addWidget(restartButton_); tableColumn->addWidget(actionBar);
-    gameOverLabel_ = new QLabel(gamePage_); gameOverLabel_->setStyleSheet("font-size:18px;font-weight:700;color:#8b2020;"); tableColumn->addWidget(gameOverLabel_);
-    auto* tableContent = new QWidget(gamePage_); tableContent->setLayout(tableColumn);
-    battleScroll_ = new QScrollArea(gamePage_); battleScroll_->setObjectName(QStringLiteral("mainBattleScroll")); battleScroll_->setWidgetResizable(true); battleScroll_->setFrameShape(QFrame::NoFrame); battleScroll_->setWidget(tableContent); layout->addWidget(battleScroll_, 1);
-    interactionPanel_ = new InteractionPanel(battleScroll_->viewport()); interactionPanel_->raise(); battleScroll_->viewport()->installEventFilter(this); updateInteractionOverlayGeometry(); setCentralWidget(central);
+    confirmUseButton_->setObjectName(QStringLiteral("primaryAction"));
+    actions->addWidget(confirmUseButton_); actions->addWidget(cancelSelectionButton_); actions->addWidget(serpentSpearButton_); actions->addWidget(endPlayButton_); actions->addWidget(declineButton_); actions->addStretch(); actions->addWidget(restartButton_); bottom->addWidget(actionBar, 0); tableColumn->addLayout(bottom);
+    gameOverLabel_ = new QLabel(battleViewport_); gameOverLabel_->setStyleSheet("font-size:18px;font-weight:700;"); gameOverLabel_->setMaximumHeight(54); tableColumn->addWidget(gameOverLabel_);
+    layout->addWidget(battleViewport_, 1);
+    interactionPanel_ = new InteractionPanel(battleViewport_); interactionPanel_->raise(); battleViewport_->installEventFilter(this); updateInteractionOverlayGeometry(); setCentralWidget(central);
     connect(confirmUseButton_, &QPushButton::clicked, this, [this] { if (!canConfirmCardUse()) return; if (serpentSpearModeActive()) { std::vector<CardId> materials; for (const auto& id : serpentSpearMaterialIds_) materials.push_back(id.toStdString()); if (serpentSpearResponseActive()) client_.submit(RespondVirtualSlashAction {client_.selfPlayerId(), *serpentSpearResponseRequestId_, std::move(materials)}); else { std::vector<PlayerId> targets; for (const auto& target : selectedTargetIds_) targets.push_back(target.toInt()); client_.submit(PlayVirtualSlashAction {client_.selfPlayerId(), std::move(materials), std::move(targets)}); } clearSerpentSpearSelection(); refresh(); return; } std::vector<PlayerId> targets; for (const auto& target : selectedTargetIds_) targets.push_back(target.toInt()); if (selectedCardType_ && *selectedCardType_ == CardType::BorrowedSword && targets.size() == 2) { const auto& players = client_.view().players; const auto hasWeapon = [&players](PlayerId id) { const auto it = std::find_if(players.begin(), players.end(), [id](const auto& p) { return p.id == id; }); return it != players.end() && it->equipment.cardsBySlot[static_cast<std::size_t>(EquipmentSlot::Weapon)].has_value(); }; if (!hasWeapon(targets.front()) && hasWeapon(targets.back())) std::swap(targets.front(), targets.back()); } client_.submit(PlayCardAction {client_.selfPlayerId(), selectedCardId_.toStdString(), std::move(targets)}); clearCardSelection(); refresh(); });
     connect(cancelSelectionButton_, &QPushButton::clicked, this, [this] { clearSerpentSpearSelection(); clearCardSelection(); clearDiscardSelection(); refresh(); });
     connect(serpentSpearButton_, &QPushButton::clicked, this, [this] { beginSerpentSpear(); refresh(); });
@@ -142,15 +181,17 @@ MainWindow::MainWindow(IGameClient& client, network::GameServer* hostServer, std
 
 void MainWindow::refresh()
 {
+    // Lifecycle cleanup is repeated safely while the lobby is visible.
     client_.refresh(); const auto& v = client_.view(); bool started = false; if (hostServer_) started = hostServer_->gameStarted(); else if (const auto* remote = dynamic_cast<const network::NetworkGameClient*>(&client_)) started = remote->lobbyState().gameStarted;
-    if (!started) { clearSerpentSpearSelection(); clearCardSelection(); clearDiscardSelection(); selectedSelectionOptionIds_.clear(); selectedResponseCardId_.clear(); activeCardSelectionRequestId_.reset(); activeResponseRequestId_.reset(); lastDisplayedEquipmentEffectEventId_ = 0; lastVisibleLogCount_ = 0; lastRecentLog_.clear(); equipmentEffectLabel_->clear(); equipmentEffectLabel_->setVisible(false); timeoutLabel_->clear(); turnLabel_->clear(); phaseLabel_->clear(); actionBanner_->clear(); judgmentResultLabel_->clear(); judgmentResultLabel_->setVisible(false); instructionLabel_->clear(); gameOverLabel_->clear(); clearLayout(opponentsLayout_); clearLayout(selfPanelLayout_); clearLayout(handLayout_); interactionPanel_->reset(); battleLogWindow_->clearEntries(); battleLogWindow_->hide(); interactionSignature_.clear(); pages_->setCurrentWidget(lobbyPage_); refreshLobbyPage(); return; }
+    if (!started) actionReadability_->resetForLobby();
+    if (!started) { clearSerpentSpearSelection(); clearCardSelection(); clearDiscardSelection(); selectedSelectionOptionIds_.clear(); selectedResponseCardId_.clear(); activeCardSelectionRequestId_.reset(); activeResponseRequestId_.reset(); lastDisplayedEquipmentEffectEventId_ = 0; lastVisibleLogCount_ = 0; lastRecentLog_.clear(); equipmentEffectLabel_->clear(); equipmentEffectLabel_->setVisible(false); timeoutLabel_->clear(); turnLabel_->clear(); phaseLabel_->clear(); actionBanner_->clear(); judgmentResultLabel_->clear(); judgmentResultLabel_->setVisible(false); instructionLabel_->clear(); gameOverLabel_->clear(); clearLayout(opponentsLayout_); clearLayout(selfPanelLayout_); clearLayout(handLayout_); interactionPanel_->reset(); battleLogWindow_->clearEntries(); battleLogWindow_->hide(); settingsDialog_->hide(); interactionSignature_.clear(); pages_->setCurrentWidget(lobbyPage_); refreshLobbyPage(); return; }
     QStringList newEffects;
     for (const auto& event : newEquipmentEffects(v.equipmentEffects, lastDisplayedEquipmentEffectEventId_)) {
         const auto text = formatEquipmentEffect(event, playerNameFor(v, event.targetId));
         if (!text.isEmpty()) newEffects << text;
     }
     if (!newEffects.isEmpty()) { equipmentEffectLabel_->setText(newEffects.join('\n')); equipmentEffectLabel_->setVisible(true); }
-    pages_->setCurrentWidget(gamePage_); modeLabel_->setText(v.gameMode == GameMode::Identity ? tr("身份模式") : tr("自由混战")); if (hostServer_) returnLobbyButton_->setVisible(v.gameOver); if (!serpentSpearEquipped() || v.gameOver || v.cardSelection || (serpentSpearResponseRequestId_ && (!v.response || !v.response->isResponder || v.response->requestId != *serpentSpearResponseRequestId_)) || (!serpentSpearResponseRequestId_ && cardInteractionState_ >= CardInteractionState::SelectingSerpentSpearCards && (v.response || v.currentPhase != Phase::Play || v.currentTurnPlayer != v.selfPlayerId))) clearSerpentSpearSelection(); if (v.currentPhase != Phase::Play || v.response || v.cardSelection || v.gameOver || v.currentTurnPlayer != v.selfPlayerId) clearCardSelection(); if (v.currentPhase != Phase::Discard || v.currentTurnPlayer != v.selfPlayerId) clearDiscardSelection();
+    pages_->setCurrentWidget(gamePage_); modeLabel_->setText(v.gameMode == GameMode::Identity ? tr("身份模式") : tr("自由混战")); returnLobbyButton_->setVisible(true); if (!serpentSpearEquipped() || v.gameOver || v.cardSelection || (serpentSpearResponseRequestId_ && (!v.response || !v.response->isResponder || v.response->requestId != *serpentSpearResponseRequestId_)) || (!serpentSpearResponseRequestId_ && cardInteractionState_ >= CardInteractionState::SelectingSerpentSpearCards && (v.response || v.currentPhase != Phase::Play || v.currentTurnPlayer != v.selfPlayerId))) clearSerpentSpearSelection(); if (v.currentPhase != Phase::Play || v.response || v.cardSelection || v.gameOver || v.currentTurnPlayer != v.selfPlayerId) clearCardSelection(); if (v.currentPhase != Phase::Discard || v.currentTurnPlayer != v.selfPlayerId) clearDiscardSelection();
     if (v.response && v.response->isResponder && v.response->type == ResponseType::Nullification
         && v.response->selectableCards.empty() && !client_.actionPending()) {
         const auto requestId = v.response->requestId;
@@ -162,6 +203,7 @@ void MainWindow::refresh()
         });
     }
     rebuildPlayers();
+    actionReadability_->ingest(v, actionReadability_->lastConsumedEventId() == 0 && v.publicEvents.size() > 3);
     if (v.judgment) {
         const auto& judgment = *v.judgment;
         const auto source = judgment.delayedTrickId == "bagua" ? tr("八卦阵判定") : tr("%1 判定").arg(cardTypeToDisplayName(judgment.delayedTrickType));
@@ -174,13 +216,16 @@ void MainWindow::refresh()
     } else { judgmentResultLabel_->clear(); judgmentResultLabel_->setVisible(false); }
     const auto turn = std::find_if(v.players.begin(), v.players.end(), [&v](const auto& p) { return p.id == v.currentTurnPlayer; }); const QString turnName = turn == v.players.end() ? tr("未知玩家") : playerName(*turn); turnLabel_->setText(tr("第 %1 回合").arg(v.turnNumber)); phaseLabel_->setText(tr("【%1的%2】").arg(v.currentTurnPlayer == v.selfPlayerId ? tr("你") : turnName, phaseToDisplayName(v.currentPhase))); if (v.timeoutKind == TimeoutKind::None || v.gameOver) timeoutLabel_->clear(); else { const int seconds = std::max(0, (v.timeoutRemainingMs + 999) / 1000); const QString prefix = v.timeoutKind == TimeoutKind::Play ? tr("出牌剩余") : v.timeoutKind == TimeoutKind::Discard ? tr("弃牌剩余") : v.timeoutKind == TimeoutKind::Selection ? tr("选择剩余") : v.response && v.response->type == ResponseType::PeachRescue ? tr("救援响应剩余") : tr("响应剩余"); timeoutLabel_->setText(tr("%1：%2 秒").arg(prefix).arg(seconds)); }
     QStringList logs; QStringList recentLogs; for (const auto& entry : v.visibleLogs) { logs << logEntryToDisplay(entry); if (showLogEntryInRecentEvent(entry)) recentLogs << logs.back(); } battleLogWindow_->setEntries(logs); const QString newestLog = recentLogs.isEmpty() ? QString() : recentLogs.back(); if (v.visibleLogs.size() != lastVisibleLogCount_ || newestLog != lastRecentLog_) { lastVisibleLogCount_ = v.visibleLogs.size(); lastRecentLog_ = newestLog; const qsizetype first = std::max<qsizetype>(0, recentLogs.size() - 3); actionBanner_->setText(recentLogs.mid(first).join(QLatin1Char('\n'))); }
-    QString signature = selectedCardId_ + '|' + QString::number(int(cardInteractionState_)) + "|p" + QString::number(int(v.currentPhase)) + "|t" + QString::number(v.currentTurnPlayer) + "|rc" + selectedResponseCardId_; for (const auto& c : v.ownHand) signature += '|' + QString::fromStdString(c.id); if (v.response) { signature += "|r" + QString::number(v.response->requestId); for (const auto& card : v.response->selectableCards) signature += "q" + QString::fromStdString(card.id); } if (v.cardSelection) { signature += "|s" + QString::number(v.cardSelection->requestId) + "x" + QString::number(v.cardSelection->options.size()); for (const auto& option : v.cardSelection->options) signature += "o" + QString::number(option.optionId); } if (v.harvest) for (const auto& card : v.harvest->pool) signature += "h" + QString::fromStdString(card.id); for (const auto& id : selectedTargetIds_) signature += "|t" + id; for (const auto& id : serpentSpearMaterialIds_) signature += "|m" + id;
+    if (v.harvest && !v.harvest->choices.empty()) actionBanner_->setText(harvestChoiceEvent(v, v.harvest->choices.back()));
+    QString signature = selectedCardId_ + '|' + QString::number(int(cardInteractionState_)) + "|p" + QString::number(int(v.currentPhase)) + "|t" + QString::number(v.currentTurnPlayer) + "|rc" + selectedResponseCardId_; for (const auto& c : v.ownHand) signature += '|' + QString::fromStdString(c.id); if (v.response) { signature += "|r" + QString::number(v.response->requestId); for (const auto& card : v.response->selectableCards) signature += "q" + QString::fromStdString(card.id); } if (v.cardSelection) { signature += "|s" + QString::number(v.cardSelection->requestId) + "x" + QString::number(v.cardSelection->options.size()); for (const auto& option : v.cardSelection->options) signature += "o" + QString::number(option.optionId); } if (v.harvest) { signature += "|hp" + QString::number(v.harvest->currentPicker); for (const auto& card : v.harvest->pool) signature += "h" + QString::fromStdString(card.id); for (const auto& choice : v.harvest->choices) signature += "c" + QString::number(choice.playerId) + QString::fromStdString(choice.card.id); } for (const auto& id : selectedTargetIds_) signature += "|t" + id; for (const auto& id : serpentSpearMaterialIds_) signature += "|m" + id;
     if (signature != interactionSignature_) { interactionSignature_ = signature; rebuildHand(); rebuildTargets(); rebuildCardSelection(); }
-    updateControls(); updateInteractionOverlayGeometry();
+    updateControls(); actionReadability_->setPrompt(instructionLabel_->text()); updateInteractionOverlayGeometry();
 }
 
 void MainWindow::refreshLobbyPage()
 {
+    themeBox_->setCurrentIndex(themeBox_->findData(int(AppSettings::themeMode())));
+    aiSpeedBox_->setCurrentIndex(aiSpeedBox_->findData(int(AppSettings::aiSpeedPreset())));
     if (!hostServer_) {
         QString text = QString::fromStdString(client_.connectionStatus());
         if (const auto* remote = dynamic_cast<const network::NetworkGameClient*>(&client_)) text += lobbyRosterText(remote->lobbyState());
@@ -323,7 +368,14 @@ void MainWindow::rebuildTargets()
 void MainWindow::rebuildCardSelection()
 {
     const auto& selection = client_.view().cardSelection;
-    if (!selection) { selectedSelectionOptionIds_.clear(); activeCardSelectionRequestId_.reset(); rebuildNullificationInteraction(); return; }
+    if (!selection) {
+        selectedSelectionOptionIds_.clear(); activeCardSelectionRequestId_.reset();
+        const auto& response = client_.view().response;
+        if (response && response->isResponder && response->type == ResponseType::Nullification && !response->selectableCards.empty()) rebuildNullificationInteraction();
+        else if (client_.view().harvest) rebuildHarvestPublicInteraction();
+        else rebuildNullificationInteraction();
+        return;
+    }
     interactionPanel_->reset();
     if (activeCardSelectionRequestId_ != selection->requestId) { selectedSelectionOptionIds_.clear(); activeCardSelectionRequestId_ = selection->requestId; }
     QString title;
@@ -342,6 +394,7 @@ void MainWindow::rebuildCardSelection()
     QString detail = tr("已选：%1；要求：%2 至 %3 项").arg(selectedSelectionOptionIds_.size()).arg(selection->minCount).arg(selection->maxCount);
     if (selection->targetId) detail += tr("；当前对象：%1").arg(playerNameFor(client_.view(), selection->targetId));
     if (client_.view().harvest) detail += tr("；当前选择者：%1").arg(playerNameFor(client_.view(), client_.view().harvest->currentPicker));
+    if (const auto recent = recentHarvestChoices(client_.view()); !recent.isEmpty()) detail += tr("；%1").arg(recent);
     if (client_.view().fireAttack) detail += tr("；已展示：%1").arg(cardLabel(client_.view().fireAttack->revealedCard));
     interactionPanel_->setContext(title, selection->prompt.empty() ? selectionPrompt(selection->purpose) : localizedPrompt(selection->prompt), detail);
     int hiddenIndex = 0;
@@ -358,7 +411,6 @@ void MainWindow::rebuildCardSelection()
             candidate = new QPushButton(label);
             candidate->setObjectName(QStringLiteral("optionTile"));
             candidate->setMinimumSize(112, 70); candidate->setMaximumWidth(180);
-            candidate->setStyleSheet(QStringLiteral("QPushButton#optionTile{background:#fffaf0;border:2px solid #b59a72;border-radius:8px;padding:8px;} QPushButton#optionTile:checked{background:#ffe2a8;border-color:#a83226;}"));
         }
         candidate->setProperty("selectionOptionId", QVariant::fromValue<qulonglong>(option.optionId));
         candidate->setCheckable(true); candidate->setChecked(selectedSelectionOptionIds_.contains(option.optionId));
@@ -376,6 +428,25 @@ void MainWindow::rebuildCardSelection()
     const bool valid = selectedSelectionOptionIds_.size() >= selection->minCount && selectedSelectionOptionIds_.size() <= selection->maxCount;
     interactionPanel_->setActions(true, valid && (!selectedSelectionOptionIds_.isEmpty() || selection->minCount > 0), tr("确认选择"), [submit] { submit(false); },
         true, [this] { selectedSelectionOptionIds_.clear(); rebuildCardSelection(); }, selection->minCount == 0, [submit] { submit(true); });
+}
+
+void MainWindow::rebuildHarvestPublicInteraction()
+{
+    const auto& harvest = client_.view().harvest;
+    if (!harvest) return;
+    interactionPanel_->reset();
+    interactionPanel_->setContext(tr("五谷丰登"),
+        tr("当前由 %1 选择公开牌。剩余牌池会在每次选择后同步更新。").arg(playerNameFor(client_.view(), harvest->currentPicker)),
+        recentHarvestChoices(client_.view()));
+    int index = 0;
+    for (const auto& card : harvest->pool) {
+        auto* candidate = new CardButton(card);
+        candidate->setProperty("interactionCard", true);
+        candidate->setEnabled(false);
+        interactionPanel_->addCandidate(candidate, index / 7, index % 7);
+        ++index;
+    }
+    interactionPanel_->setActions(false, false, tr("确认"), {}, false, {});
 }
 
 void MainWindow::rebuildNullificationInteraction()
@@ -424,13 +495,13 @@ void MainWindow::updateControls()
 
 void MainWindow::updateInteractionOverlayGeometry()
 {
-    if (!battleScroll_ || !interactionPanel_) return;
-    interactionPanel_->fitToViewport(battleScroll_->viewport()->size());
+    if (!battleViewport_ || !interactionPanel_) return;
+    interactionPanel_->fitToViewport(battleViewport_->size());
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event)
 {
-    if (battleScroll_ && watched == battleScroll_->viewport() && event->type() == QEvent::Resize)
+    if (battleViewport_ && watched == battleViewport_ && event->type() == QEvent::Resize)
         updateInteractionOverlayGeometry();
     return QMainWindow::eventFilter(watched, event);
 }

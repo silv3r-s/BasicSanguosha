@@ -86,6 +86,8 @@ void testLogLocalization()
         {"Player 2 failed [Indulgence] judgment and skips Play phase.", "乐不思蜀"},
         {"[Lightning] passed to Player 2.", "闪电"},
         {"Player 2 revealed a hand card for [Fire Attack].", "火攻"},
+        {"Player 2 revealed [Dodge] Diamond 12 for [Fire Attack].", "【闪 ♦Q】"},
+        {"Player 3 obtained [Peach] Heart 12 from [Harvest].", "从【五谷丰登】获得【桃 ♥Q】"},
         {"Player 2 was chained by [Iron Chain].", "横置"},
         {"Player 2 propagated 1 Fire damage to Player 3 through [Iron Chain].", "传导至玩家 3"},
         {"Player 2 propagated 1 Thunder damage to Player 3 through [Iron Chain].", "雷电伤害"},

@@ -2,7 +2,9 @@
 
 #include <QLabel>
 #include <QMouseEvent>
+#include <QStyle>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 
 #include "ui/GameText.h"
 
@@ -41,12 +43,6 @@ CardButton::CardButton(const CardView& card, QWidget* parent) : QPushButton(pare
         .arg(cardDisplayName(value), suitToSymbol(card.suit), rankToDisplayName(card.rank),
              cardCategoryDisplayName(card.type)));
     setToolTip(QStringLiteral("%1\n%2").arg(cardDisplayName(value), cardDescription(value)));
-    setStyleSheet(QStringLiteral(
-        "QPushButton#handCard{background:#fffaf0;border:2px solid #b59a72;border-radius:10px;"
-        "padding:8px;font-size:14px;font-weight:600;color:#33271c;text-align:center;}"
-        "QPushButton#handCard:hover{background:#fff1cf;border-color:#b23a2b;}"
-        "QPushButton#handCard:checked{background:#ffe2a8;border:3px solid #b3261e;}"
-        "QPushButton#handCard:disabled{background:#e5e3df;border-color:#aaa;color:#888;}"));
 }
 
 void CardButton::setSelected(bool selected) { setChecked(selected); }
@@ -72,10 +68,6 @@ CompactTargetCard::CompactTargetCard(const PublicPlayerView& player, bool identi
     }
     if (!player.judgmentCards.empty()) details << QStringLiteral("判定区：%1 张").arg(player.judgmentCards.size());
     setToolTip(details.isEmpty() ? QStringLiteral("无装备与判定牌") : details.join(QStringLiteral("\n\n")));
-    setStyleSheet(QStringLiteral(
-        "QPushButton#compactTargetCard{background:#f8f3e8;border:2px solid #b79b72;border-radius:8px;padding:6px;text-align:left;font-weight:600;}"
-        "QPushButton#compactTargetCard:hover{background:#fff1cf;border-color:#c17b25;}"
-        "QPushButton#compactTargetCard:checked{background:#ffe1a6;border:3px solid #a83226;}"));
     setSelected(selected);
 }
 
@@ -89,15 +81,21 @@ PlayerPanel::PlayerPanel(QWidget* parent) : QFrame(parent)
 {
     setObjectName(QStringLiteral("playerPanel"));
     setMinimumSize(172, 96);
-    auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(8, 5, 8, 5); layout->setSpacing(2);
+    setMaximumHeight(150);
+    auto* layout = new QHBoxLayout(this);
+    layout->setContentsMargins(8, 5, 8, 5); layout->setSpacing(7);
+    portrait_ = new QLabel(QStringLiteral("将"), this); portrait_->setObjectName(QStringLiteral("portraitSlot")); portrait_->setAlignment(Qt::AlignCenter); portrait_->setFixedSize(54, 72); portrait_->setToolTip(QStringLiteral("角色立绘预留区域")); layout->addWidget(portrait_, 0, Qt::AlignTop);
+    auto* details = new QVBoxLayout; details->setSpacing(1);
     title_ = new QLabel(this); identity_ = new QLabel(this); hp_ = new QLabel(this);
-    state_ = new QLabel(this); equipment_ = new QLabel(this); judgment_ = new QLabel(this);
+    state_ = new QLabel(this); chainBadge_ = new QLabel(QStringLiteral("【连环】"), this); equipment_ = new QLabel(this); judgment_ = new QLabel(this);
+    chainBadge_->setObjectName(QStringLiteral("chainBadge"));
+    chainBadge_->setToolTip(QStringLiteral("连环状态：受到属性伤害时会向其他连环角色传导"));
     title_->setStyleSheet(QStringLiteral("font-size:15px;font-weight:700;"));
-    hp_->setStyleSheet(QStringLiteral("font-size:15px;color:#a22620;font-weight:700;"));
-    equipment_->setWordWrap(true); equipment_->setStyleSheet(QStringLiteral("font-size:11px;color:#4d4034;"));
-    judgment_->setWordWrap(true); judgment_->setStyleSheet(QStringLiteral("font-size:11px;color:#8a5414;"));
-    for (auto* label : {title_, identity_, hp_, state_, equipment_, judgment_}) layout->addWidget(label);
+    hp_->setStyleSheet(QStringLiteral("font-size:15px;font-weight:700;"));
+    equipment_->setWordWrap(true); equipment_->setStyleSheet(QStringLiteral("font-size:11px;"));
+    judgment_->setWordWrap(true); judgment_->setStyleSheet(QStringLiteral("font-size:11px;"));
+    for (auto* label : {title_, identity_, hp_, chainBadge_, state_, equipment_, judgment_}) details->addWidget(label);
+    layout->addLayout(details, 1);
 }
 
 void PlayerPanel::setPlayer(const PublicPlayerView& player, bool identityMode, bool self, bool current)
@@ -113,7 +111,11 @@ void PlayerPanel::setPlayer(const PublicPlayerView& player, bool identityMode, b
     identity_->setText(QStringLiteral("身份：%1  ·  %2  ·  %3").arg(identity, player.controlType == PlayerControlType::AI ? QStringLiteral("AI") : QStringLiteral("真人"), life));
     hp_->setText(QStringLiteral("♥ %1 / %2    手牌 %3").arg(player.hp).arg(player.maxHp).arg(player.handCardCount));
     QStringList states;
-    if (player.chained) states << QStringLiteral("横置");
+    if (player.chained) states << QStringLiteral("连环状态");
+    chainBadge_->setVisible(player.chained);
+    setProperty("chained", player.chained);
+    setProperty("dying", player.dying);
+    setProperty("alive", player.alive);
     state_->setText(states.join(QStringLiteral("  ·  "))); state_->setVisible(!states.isEmpty());
     QStringList equipmentSummary;
     for (const auto slot : {EquipmentSlot::Weapon, EquipmentSlot::Armor, EquipmentSlot::OffensiveHorse, EquipmentSlot::DefensiveHorse}) {
@@ -158,13 +160,9 @@ void PlayerPanel::mousePressEvent(QMouseEvent* event)
 
 void PlayerPanel::updateStyle()
 {
-    const QString frame = selected_
-        ? QStringLiteral("background:#ffe1a6;border:3px solid #a83226;")
-        : selectable_ ? QStringLiteral("background:#fff6dc;border:2px solid #c17b25;")
-        : current_ ? QStringLiteral("background:#fff2c7;border:3px solid #d28b18;")
-        : self_ ? QStringLiteral("background:#eef6ff;border:2px solid #4f78a8;")
-                : QStringLiteral("background:#f7f4ee;border:1px solid #b7aa98;");
-    setStyleSheet(QStringLiteral("QFrame#playerPanel{%1border-radius:10px;}").arg(frame));
+    style()->unpolish(this);
+    style()->polish(this);
+    update();
 }
 
 } // namespace sanguosha::ui

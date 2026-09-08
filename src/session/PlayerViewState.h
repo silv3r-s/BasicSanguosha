@@ -85,9 +85,14 @@ struct CardSelectionView {
     std::vector<CardSelectionOptionView> options;
     std::string prompt;
 };
+struct HarvestChoiceView {
+    PlayerId playerId {0};
+    CardView card;
+};
 struct HarvestView {
     PlayerId currentPicker {0};
     std::vector<CardView> pool;
+    std::vector<HarvestChoiceView> choices;
 };
 struct JudgmentView {
     PlayerId playerId {0};

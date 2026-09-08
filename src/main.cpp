@@ -9,6 +9,7 @@
 #include "network/GameServer.h"
 #include "network/NetworkGameClient.h"
 #include "ui/ConnectionPage.h"
+#include "ui/AppSettings.h"
 #include "ui/MainWindow.h"
 
 namespace {
@@ -27,7 +28,7 @@ public:
             [this](const QString& host, quint16 port, const QString& name) { joinHost(host, port, name); });
     }
 
-    void showConnectionPage() { connectionPage_.setStatusMessage(lastConnectionError_); pages_.setCurrentWidget(&connectionPage_); pages_.show(); }
+    void showConnectionPage() { connectionPage_.setStatusMessage(lastConnectionError_); pages_.setCurrentWidget(&connectionPage_); pages_.showMaximized(); }
 
     bool createHost(const QString& name, quint16 port)
     {
@@ -68,6 +69,7 @@ private:
         QObject::connect(timer, &QTimer::timeout, sessionWindow_.get(), [this] { if (server_ && server_->remoteConnected()) server_->broadcastViews(); });
         timer->start(100);
         pages_.setCurrentWidget(sessionWindow_.get());
+        pages_.showMaximized();
     }
 
     void attachRemote(std::unique_ptr<sanguosha::network::NetworkGameClient> client)
@@ -88,6 +90,7 @@ private:
             }
         });
         pages_.setCurrentWidget(sessionWindow_.get());
+        pages_.showMaximized();
     }
 
     void scheduleLeave()
@@ -121,6 +124,9 @@ private:
 int main(int argc, char* argv[])
 {
     QApplication application(argc, argv);
+    QCoreApplication::setOrganizationName(QStringLiteral("BasicSanguosha"));
+    QCoreApplication::setApplicationName(QStringLiteral("BasicSanguosha"));
+    sanguosha::ui::AppSettings::initialize();
     const auto arguments = application.arguments();
     const bool host = arguments.contains(QStringLiteral("--host"));
     int joinIndex = arguments.indexOf(QStringLiteral("--connect"));

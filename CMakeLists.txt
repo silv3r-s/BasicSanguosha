@@ -36,6 +36,8 @@ qt_add_executable(BasicSanguosha
     src/ui/GameWidgets.cpp
     src/ui/BattleLogWindow.cpp
     src/ui/InteractionPanel.cpp
+    src/ui/ActionReadability.cpp
+    src/ui/AppSettings.cpp
     src/ui/ConnectionPage.cpp
     src/ui/MainWindow.cpp
 )
@@ -297,9 +299,15 @@ if(BUILD_TESTING)
         target_compile_options(BasicSanguoshaGameTextTests PRIVATE /utf-8)
     endif()
     add_test(NAME BasicSanguoshaGameTextTests COMMAND BasicSanguoshaGameTextTests)
-    add_executable(BasicSanguoshaUXClosureTests tests/UXClosureTests.cpp src/core/Player.cpp src/cards/Card.cpp src/ui/GameText.cpp src/ui/GameWidgets.cpp src/ui/BattleLogWindow.cpp src/ui/InteractionPanel.cpp)
+    add_executable(BasicSanguoshaUXClosureTests
+        tests/UXClosureTests.cpp
+        src/core/Player.cpp src/core/Deck.cpp src/core/GameEngine.cpp src/core/RandomGenerator.cpp src/core/DistanceCalculator.cpp src/core/DamageSystem.cpp src/core/EventDispatcher.cpp
+        src/cards/Card.cpp src/cards/StandardDeckDefinition.cpp src/session/GameSession.cpp src/client/GameClientController.cpp
+        src/network/NetworkProtocol.cpp src/network/GameServer.cpp src/network/NetworkGameClient.cpp
+        src/ai/AIController.cpp src/ai/AIThreatEvaluator.cpp src/ai/AIResourcePlanner.cpp src/ai/AITargetEvaluator.cpp src/ai/AIIdentityInference.cpp src/ai/AIIdentityStrategy.cpp src/ai/AIActionPacing.cpp
+        src/ui/GameText.cpp src/ui/GameWidgets.cpp src/ui/BattleLogWindow.cpp src/ui/InteractionPanel.cpp src/ui/ActionReadability.cpp src/ui/AppSettings.cpp src/ui/MainWindow.cpp)
     target_include_directories(BasicSanguoshaUXClosureTests PRIVATE src)
-    target_link_libraries(BasicSanguoshaUXClosureTests PRIVATE Qt6::Widgets)
+    target_link_libraries(BasicSanguoshaUXClosureTests PRIVATE Qt6::Widgets Qt6::Network)
     target_compile_definitions(BasicSanguoshaUXClosureTests PRIVATE SANGUOSHA_TESTING SANGUOSHA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     if(MSVC)
         target_compile_options(BasicSanguoshaUXClosureTests PRIVATE /utf-8)

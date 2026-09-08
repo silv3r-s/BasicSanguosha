@@ -16,19 +16,21 @@ class QComboBox;
 class QStackedWidget;
 class QScrollArea;
 class QEvent;
+class QDialog;
 
 namespace sanguosha { class IGameClient; enum class CardType; namespace network { class GameServer; } }
 
 namespace sanguosha::ui {
 class BattleLogWindow;
 class InteractionPanel;
+class ActionReadability;
 enum class CardInteractionState { Idle, CardSelected, SelectingTarget, ReadyToConfirm, SelectingSerpentSpearCards, SelectingSerpentSpearTarget };
 
 class MainWindow final : public QMainWindow {
 public:
     explicit MainWindow(IGameClient& client, network::GameServer* hostServer = nullptr, std::function<void()> leaveRoom = {}, QWidget* parent = nullptr);
 private:
-    void refresh(); void refreshLobbyPage(); void rebuildPlayers(); void rebuildHand(); void rebuildTargets(); void rebuildCardSelection(); void rebuildNullificationInteraction(); void updateControls();
+    void refresh(); void refreshLobbyPage(); void rebuildPlayers(); void rebuildHand(); void rebuildTargets(); void rebuildCardSelection(); void rebuildHarvestPublicInteraction(); void rebuildNullificationInteraction(); void updateControls();
     void updateInteractionOverlayGeometry();
     bool eventFilter(QObject* watched, QEvent* event) override;
     void clearCardSelection(); void selectCard(const QString& cardId, CardType type);
@@ -45,10 +47,10 @@ private:
     network::GameServer* hostServer_ {};
     std::function<void()> leaveRoom_;
     QStackedWidget* pages_ {}; QWidget* lobbyPage_ {}; QWidget* gamePage_ {}; QLabel* lobbyStatusLabel_ {};
-    QWidget* lobbySection_ {}; QComboBox* playerCountBox_ {}; QLabel* lobbySummaryLabel_ {}; QPushButton* addAIButton_ {}; QPushButton* removeAIButton_ {}; QPushButton* startGameButton_ {}; QPushButton* leaveRoomButton_ {}; QPushButton* returnLobbyButton_ {};
+    QWidget* lobbySection_ {}; QComboBox* playerCountBox_ {}; QComboBox* themeBox_ {}; QComboBox* aiSpeedBox_ {}; QLabel* lobbySummaryLabel_ {}; QPushButton* addAIButton_ {}; QPushButton* removeAIButton_ {}; QPushButton* startGameButton_ {}; QPushButton* leaveRoomButton_ {}; QPushButton* returnLobbyButton_ {}; QPushButton* settingsButton_ {}; QDialog* settingsDialog_ {};
     QLabel* modeLabel_ {}; QLabel* turnLabel_ {}; QLabel* phaseLabel_ {}; QLabel* timeoutLabel_ {}; QLabel* actionBanner_ {}; QLabel* judgmentResultLabel_ {}; QLabel* equipmentEffectLabel_ {}; QLabel* instructionLabel_ {}; QLabel* gameOverLabel_ {};
     QGridLayout* opponentsLayout_ {}; QHBoxLayout* selfPanelLayout_ {}; QHBoxLayout* handLayout_ {};
-    InteractionPanel* interactionPanel_ {}; BattleLogWindow* battleLogWindow_ {}; QPushButton* battleLogButton_ {}; QScrollArea* battleScroll_ {};
+    InteractionPanel* interactionPanel_ {}; BattleLogWindow* battleLogWindow_ {}; QPushButton* battleLogButton_ {}; QWidget* battleViewport_ {}; ActionReadability* actionReadability_ {};
     QPushButton* endPlayButton_ {}; QPushButton* confirmUseButton_ {}; QPushButton* cancelSelectionButton_ {}; QPushButton* serpentSpearButton_ {}; QPushButton* declineButton_ {}; QPushButton* restartButton_ {};
     QString selectedCardId_; std::optional<CardType> selectedCardType_; QSet<QString> selectedTargetIds_; QSet<QString> selectedDiscardIds_; QSet<QString> serpentSpearMaterialIds_; QSet<qulonglong> selectedSelectionOptionIds_;
     CardInteractionState cardInteractionState_ {CardInteractionState::Idle};

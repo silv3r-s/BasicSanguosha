@@ -36,9 +36,11 @@ protected:
 private:
     void updateStyle();
     QLabel* title_ {};
+    QLabel* portrait_ {};
     QLabel* identity_ {};
     QLabel* hp_ {};
     QLabel* state_ {};
+    QLabel* chainBadge_ {};
     QLabel* equipment_ {};
     QLabel* judgment_ {};
     bool self_ {false};

@@ -850,6 +850,11 @@ int main()
         const auto firstCard = first.selectableCards.front().cardId;
         assert(!game.submitAction(SelectCardsAction {2, first.requestId, {firstCard}}).accepted);
         assert(game.submitAction(SelectCardsAction {1, first.requestId, {firstCard}}).accepted);
+        assert(game.harvestContext() && game.harvestContext()->choices.size() == 1
+               && game.harvestContext()->choices.front().playerId == 1
+               && game.harvestContext()->choices.front().card
+               && game.harvestContext()->choices.front().card->id() == firstCard
+               && std::none_of(game.harvestContext()->pool.begin(), game.harvestContext()->pool.end(), [&firstCard](const auto& c) { return c->id() == firstCard; }));
         passNullificationChain(game);
         const auto second = *game.pendingCardSelection(); assert(second.requester == 2 && second.requestId != first.requestId);
         assert(!game.submitAction(SelectCardsAction {1, first.requestId, {second.selectableCards.front().cardId}}).accepted);
@@ -861,6 +866,9 @@ int main()
             } else assert(game.handleTimeout().accepted);
         }
         assert(!game.harvestContext() && game.currentPlayer()->id() == 1 && game.currentPhase() == Phase::Play);
+        assert(std::any_of(game.logEntries().begin(), game.logEntries().end(), [](const auto& entry) {
+            return entry.find(" obtained [") != std::string::npos && entry.find(" from [Harvest].") != std::string::npos;
+        }));
     }
     { // B4.3B: a declined forced Slash transfers the same equipped weapon to the source.
         auto game = fourPlayerGame(); auto& p1 = *game.players()[0]; auto& p2 = *game.players()[1]; auto& p3 = *game.players()[2];

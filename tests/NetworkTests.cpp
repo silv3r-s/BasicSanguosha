@@ -195,6 +195,18 @@ static void iceSwordClearsOnReturnToLobby()
 int main(int argc, char** argv)
 {
     QCoreApplication application(argc, argv);
+    {
+        PlayerViewState eventView {1, 1, 1, Phase::Play};
+        GameEvent event {GameEventType::CardUsed, 1, 2, "Slash", 99};
+        event.card = PublicEventCard {"Slash", CardType::Slash, Suit::Spade, 7};
+        eventView.publicEvents.push_back(event);
+        const auto decoded = decodeViewState(encodeViewState(eventView));
+        require(decoded && decoded->publicEvents.size() == 1 && decoded->publicEvents.front().card
+                    && decoded->publicEvents.front().card->type == CardType::Slash
+                    && decoded->publicEvents.front().card->suit == Suit::Spade
+                    && decoded->publicEvents.front().card->rank == 7,
+                "public action card name, type, suit, and rank round-trip without hand inference");
+    }
     kirinBowClearsOnReturnToLobby();
     iceSwordClearsOnReturnToLobby();
     { // Stage A: three independent TCP clients occupy, release and reuse deterministic human seats before an explicit start.
@@ -1229,14 +1241,33 @@ int main(int argc, char** argv)
         require(harvestHost.view().cardSelection && harvestHost.view().cardSelection->options.front().cardType
                     && *harvestHost.view().cardSelection->options.front().cardType == pool.front().type,
                 "Harvest selection carries CardType display metadata instead of its internal name");
+        const auto firstChosen = pool.front();
+        const auto p2PrivateBefore = harvestP2.view().ownHand;
         require(harvestHost.view().cardSelection && harvestHost.submitCardSelection(harvestHost.view().cardSelection->requestId, harvestHost.view().cardSelection->options.front().optionId).accepted, "P1 selects a Harvest card");
-        require(waitFor([&] { return harvestP2.view().cardSelection && harvestP2.view().harvest && harvestP2.view().harvest->pool.size() == 3; }), "P2 sees reduced public pool and its own picker request");
+        require(waitFor([&] { harvestHost.refresh(); return harvestP2.view().cardSelection && harvestHost.view().harvest && harvestP2.view().harvest && harvestP3.view().harvest && harvestP4.view().harvest && harvestP2.view().harvest->pool.size() == 3 && harvestP3.view().harvest->choices.size() == 1; }), "P2 sees reduced public pool and its own picker request");
+        for (const auto* view : {&harvestHost.view(), &harvestP2.view(), &harvestP3.view(), &harvestP4.view()}) {
+            require(view->harvest && view->harvest->currentPicker == 2 && view->harvest->choices.size() == 1,
+                    "Harvest choice and next selector are public to chooser, source, and third parties");
+            const auto& choice = view->harvest->choices.front();
+            require(choice.playerId == 1 && choice.card.id == firstChosen.id && choice.card.type == firstChosen.type
+                        && choice.card.suit == firstChosen.suit && choice.card.rank == firstChosen.rank
+                        && choice.card.displayName == firstChosen.displayName,
+                    "Harvest public choice preserves player, card name, suit, and rank");
+            require(std::none_of(view->harvest->pool.begin(), view->harvest->pool.end(), [&firstChosen](const auto& card) { return card.id == firstChosen.id; }),
+                    "chosen Harvest card is removed from every public pool");
+        }
+        require(harvestP2.view().ownHand.size() == p2PrivateBefore.size()
+                    && std::none_of(harvestP2.view().ownHand.begin(), harvestP2.view().ownHand.end(), [&firstChosen](const auto& card) { return card.id == firstChosen.id; }),
+                "Harvest choice does not leak another player's hand into a third-party ownHand");
         require(harvestP2.submitCardSelection(harvestP2.view().cardSelection->requestId, harvestP2.view().cardSelection->options.front().optionId).accepted, "P2 selects a Harvest card");
         require(waitFor([&] { return harvestP3.view().cardSelection && harvestP3.view().harvest && harvestP3.view().harvest->pool.size() == 2; }), "P3 becomes picker over TCP");
         require(harvestServer.session().handleTimeout().accepted, "P3 Harvest timeout auto-picks deterministically"); harvestServer.broadcastViews();
         require(waitFor([&] { return harvestP4.view().cardSelection && harvestP4.view().harvest && harvestP4.view().harvest->pool.size() == 1; }), "P4 sees timeout-reduced public pool");
         require(harvestP4.submitCardSelection(harvestP4.view().cardSelection->requestId, harvestP4.view().cardSelection->options.front().optionId).accepted, "P4 completes Harvest");
         require(waitFor([&] { harvestHost.refresh(); return !harvestHost.view().harvest && !harvestP2.view().harvest && !harvestP3.view().harvest && !harvestP4.view().harvest; }), "Harvest pool clears for host and all remotes");
+        const auto hasPublicChoiceLog = [](const PlayerViewState& view) { return std::any_of(view.visibleLogs.begin(), view.visibleLogs.end(), [](const auto& entry) { return entry.find(" obtained [") != std::string::npos && entry.find(" from [Harvest].") != std::string::npos; }); };
+        require(hasPublicChoiceLog(harvestHost.view()) && hasPublicChoiceLog(harvestP2.view()) && hasPublicChoiceLog(harvestP3.view()) && hasPublicChoiceLog(harvestP4.view()),
+                "every client retains the complete public Harvest choice in Battle Log state");
         require(harvestEngine.currentPlayer()->id() == 1 && harvestEngine.currentPhase() == Phase::Play, "Harvest returns to source Play phase");
     }
     { // B4.3: four real TCP clients seal Borrowed Sword privacy, authority, pass transfer, timeout and stale-request behavior.
@@ -1385,11 +1416,14 @@ int main(int argc, char** argv)
         while (engine.pendingResponse()) { const auto request = *engine.pendingResponse(); if (request.responder == 1) elementalHost.submit(RespondAction {1, request.requestId, std::nullopt}); else if (request.responder == 2) elementalP2.submit(RespondAction {2, request.requestId, std::nullopt}); else elementalP3.submit(RespondAction {3, request.requestId, std::nullopt}); waitFor([&] { return !engine.pendingResponse() || engine.pendingResponse()->requestId != request.requestId; }); }
         require(waitFor([&] { return elementalP2.view().cardSelection && elementalP2.view().cardSelection->purpose == CardSelectionPurpose::FireAttackReveal; }), "target receives private reveal list");
         require(!elementalP3.view().cardSelection && payload[2].contains("PUBLIC_B46_REVEAL") && !payload[3].contains("SECRET_B46_OTHER") && !payload[3].contains("SECRET_B46_MATCH"), "Fire Attack private JSON is hidden");
-        const auto revealRequest = elementalP2.view().cardSelection->requestId; require(elementalP2.submitCardSelection(revealRequest, 1).accepted, "target reveals through TCP"); require(waitFor([&] { return elementalHost.view().fireAttack && elementalP3.view().fireAttack; }), "revealed card becomes public");
-        require(elementalHost.view().fireAttack->revealedCard.id == "PUBLIC_B46_REVEAL" && elementalP3.view().fireAttack->revealedCard.id == "PUBLIC_B46_REVEAL", "all clients agree on public reveal");
+        const auto revealRequest = elementalP2.view().cardSelection->requestId; require(elementalP2.submitCardSelection(revealRequest, 1).accepted, "target reveals through TCP"); require(waitFor([&] { return elementalHost.view().fireAttack && elementalP2.view().fireAttack && elementalP3.view().fireAttack; }), "revealed card becomes public to source, target, and third party");
+        const auto publicReveal = [](const PlayerViewState& view) { return view.fireAttack && view.fireAttack->revealedCard.id == "PUBLIC_B46_REVEAL" && view.fireAttack->revealedCard.type == CardType::Dodge && view.fireAttack->revealedCard.suit == Suit::Spade && view.fireAttack->revealedCard.rank == 1; };
+        require(publicReveal(elementalHost.view()) && publicReveal(elementalP2.view()) && publicReveal(elementalP3.view()), "Fire Attack public reveal preserves card name, suit, and rank for all roles");
+        require(!payload[3].contains("SECRET_B46_OTHER") && !payload[3].contains("SECRET_B46_MATCH"), "Fire Attack reveal does not expose any other hand card");
         require(elementalP2.submitCardSelection(revealRequest, 1).accepted && waitFor([&] { return !elementalP2.actionPending(); }), "stale TCP reveal reaches rejection path");
         require(engine.pendingCardSelection() && engine.pendingCardSelection()->purpose == CardSelectionPurpose::FireAttackDiscard && engine.pendingCardSelection()->requestId != revealRequest, "stale reveal preserves fresh discard request");
         elementalHost.refresh(); require(elementalHost.view().cardSelection && elementalHost.view().cardSelection->options.size() == 1, "only source sees matching discard option"); require(elementalHost.submitCardSelection(elementalHost.view().cardSelection->requestId, 1).accepted, "source discards matching card"); elementalServer.broadcastViews();
+        require(waitFor([&] { return !elementalHost.view().fireAttack && !elementalP2.view().fireAttack && !elementalP3.view().fireAttack; }), "Fire Attack temporary public reveal clears after resolution");
         require(waitFor([&] { return elementalP2.view().players[1].hp == 3 && elementalP2.view().players[2].hp == 3 && !elementalP2.view().players[1].chained && !elementalP3.view().players[2].chained; }), "Fire propagation and chained reset synchronize over TCP");
     }
     { // Stage 3.3: Slash target arrays round-trip without protocol-specific target limits.

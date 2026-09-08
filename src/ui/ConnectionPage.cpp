@@ -39,7 +39,7 @@ ConnectionPage::ConnectionPage(QWidget* parent) : QWidget(parent)
     joinForm->addRow(tr("玩家昵称："), joinName_);
     joinForm->addRow(join);
     layout->addWidget(joinBox);
-    error_ = new QLabel(this); error_->setStyleSheet("color:#9b2020;"); error_->setWordWrap(true); layout->addWidget(error_);
+    error_ = new QLabel(this); error_->setObjectName(QStringLiteral("errorLabel")); error_->setWordWrap(true); layout->addWidget(error_);
     layout->addStretch();
     connect(create, &QPushButton::clicked, this, [this] { emit createRequested(hostName_->text().trimmed(), quint16(hostPort_->value())); });
     connect(join, &QPushButton::clicked, this, [this] {

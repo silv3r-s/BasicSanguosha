@@ -28,17 +28,12 @@ InteractionPanel::InteractionPanel(QWidget* parent) : QFrame(parent)
     setObjectName(QStringLiteral("interactionPanel"));
     setMinimumSize(0, 0);
     setProperty("overlay", true);
-    setStyleSheet(QStringLiteral(
-        "QFrame#interactionPanel{background:#fff8e7;border:2px solid #b98a45;border-radius:10px;}"
-        "QLabel#interactionTitle{font-size:17px;font-weight:700;color:#5b321d;}"
-        "QPushButton#interactionConfirm{background:#a83226;color:white;font-weight:700;border-radius:6px;}"
-        "QPushButton#interactionConfirm:disabled{background:#aaa;color:#ddd;}"));
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(12, 9, 12, 9);
     layout->setSpacing(5);
     title_ = new QLabel(this); title_->setObjectName(QStringLiteral("interactionTitle"));
     prompt_ = new QLabel(this); prompt_->setWordWrap(true);
-    detail_ = new QLabel(this); detail_->setWordWrap(true); detail_->setStyleSheet(QStringLiteral("color:#705b45;"));
+    detail_ = new QLabel(this); detail_->setWordWrap(true); detail_->setObjectName(QStringLiteral("interactionDetail"));
     layout->addWidget(title_); layout->addWidget(prompt_); layout->addWidget(detail_);
 
     auto* content = new QWidget(this);

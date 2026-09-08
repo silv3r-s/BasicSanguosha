@@ -65,7 +65,7 @@ void GameEngine::createGame(const std::vector<std::string> &names, const std::ve
     PlayerId id = 1; Seat seat = 0;
     for (std::size_t index = 0; index < names.size(); ++index) players_.push_back(std::make_shared<Player>(id++, names[index], seat++, assigned[index], controlTypes.empty() ? PlayerControlType::Human : controlTypes[index]));
     started_ = false; gameOver_ = false; winner_.reset(); winningSide_ = WinningSide::None; winningPlayers_.clear(); pendingResponse_.reset(); pendingCardSelection_.reset(); dyingContext_.reset(); duelContext_.reset(); qinglongContext_.reset(); axeContext_.reset(); kirinBowContext_.reset(); doubleSwordContext_.reset(); iceSwordContext_.reset(); multiTargetEffect_.reset(); harvestContext_.reset(); borrowedSwordContext_.reset(); trickResolution_.reset(); nullificationChain_.reset(); judgmentContext_.reset(); judgmentPhaseContext_.reset(); latestJudgment_.reset(); pendingCardUse_.reset(); deferredSlashDamage_.reset(); pendingCard_.reset(); delayedTrickSources_.clear(); skipDrawThisTurn_ = false; skipPlayThisTurn_ = false;
-    logEntries_.clear(); eventHistory_.clear(); equipmentEffects_.clear(); nextEquipmentEffectId_ = 1;
+    logEntries_.clear(); eventHistory_.clear(); equipmentEffects_.clear(); nextGameEventId_ = 1; nextEquipmentEffectId_ = 1;
 }
 
 void GameEngine::startGame()
@@ -74,6 +74,7 @@ void GameEngine::startGame()
     for (const auto &player : players_) player->resetForNewGame();
     deck_.initialize(random_);
     logEntries_.clear(); eventHistory_.clear(); pendingResponse_.reset(); pendingCardSelection_.reset(); dyingContext_.reset(); duelContext_.reset(); qinglongContext_.reset(); axeContext_.reset(); kirinBowContext_.reset(); doubleSwordContext_.reset(); iceSwordContext_.reset(); multiTargetEffect_.reset(); harvestContext_.reset(); borrowedSwordContext_.reset(); trickResolution_.reset(); nullificationChain_.reset(); judgmentContext_.reset(); judgmentPhaseContext_.reset(); latestJudgment_.reset(); pendingCardUse_.reset(); deferredSlashDamage_.reset(); pendingCard_.reset(); delayedTrickSources_.clear(); skipDrawThisTurn_ = false; skipPlayThisTurn_ = false;
+    nextGameEventId_ = 1;
     gameOver_ = false; winner_.reset(); winningSide_ = WinningSide::None; winningPlayers_.clear(); started_ = true; currentPlayerIndex_ = 0; turnNumber_ = 0;
     if (gameMode_ == GameMode::Identity) {
         const auto lord = std::find_if(players_.begin(), players_.end(), [](const auto& player) { return player->identity() == PlayerIdentity::Lord; });
@@ -139,7 +140,7 @@ ActionResult GameEngine::submitAction(const PlayCardAction &action)
             log(source->name() + " replaced equipped [" + replaced->name() + "].");
         }
         log(source->name() + " equipped [" + equipped->name() + "].");
-        emitEvent(GameEventType::CardUsed, source->id(), source->id(), equipped->name());
+        emitEvent(GameEventType::CardUsed, source->id(), source->id(), equipped->name(), equipped.get());
         if (*slot == EquipmentSlot::Weapon && previousRange != attackRange(source->id())) {
             log(source->name() + " attack range is now " + std::to_string(attackRange(source->id())) + ".");
         }
@@ -150,7 +151,7 @@ ActionResult GameEngine::submitAction(const PlayCardAction &action)
         if (source->hp() >= source->maxHp()) return {false, "Current HP is already full."};
         auto used = source->removeCard(card->id());
         log(source->name() + " used [Peach].");
-        emitEvent(GameEventType::CardUsed, source->id(), source->id(), "Peach");
+        emitEvent(GameEventType::CardUsed, source->id(), source->id(), "Peach", card.get());
         deck_.discard(used);
         applyRecover(Recover {source->id(), source->id(), 1});
         return {true, "Peach used."};
@@ -162,34 +163,34 @@ ActionResult GameEngine::submitAction(const PlayCardAction &action)
         source->setWineBuff(true);
         log(source->name() + " used [Wine].");
         log(source->name() + "'s next [Slash] damage is +1.");
-        emitEvent(GameEventType::CardUsed, source->id(), source->id(), "Wine");
+        emitEvent(GameEventType::CardUsed, source->id(), source->id(), "Wine", card.get());
         return {true, "Wine used."};
     }
     if (card->type() == CardType::ExNihilo) {
         if (!action.targetIds.empty()) return {false, "Ex Nihilo does not require a target."};
         pendingCard_ = source->removeCard(card->id()); pendingCardUse_ = CardUseContext {source->id(), card->id(), card->type(), {}, 1};
         log(source->name() + " used [Ex Nihilo].");
-        emitEvent(GameEventType::CardUsed, source->id(), source->id(), "ExNihilo");
+        emitEvent(GameEventType::CardUsed, source->id(), source->id(), "ExNihilo", card.get());
         beginTrickResolution(source->id(), card->id(), card->type());
         return {true, "Ex Nihilo is awaiting Nullification responses."};
     }
     if (card->type() == CardType::PeachGarden) {
         if (!action.targetIds.empty()) return {false, "Peach Garden does not require a target."};
         pendingCard_ = source->removeCard(card->id()); pendingCardUse_ = CardUseContext {source->id(), card->id(), card->type(), {}, 1};
-        log(source->name() + " used [Peach Garden]."); emitEvent(GameEventType::CardUsed, source->id(), {}, "PeachGarden");
+        log(source->name() + " used [Peach Garden]."); emitEvent(GameEventType::CardUsed, source->id(), {}, "PeachGarden", card.get());
         beginTrickResolution(source->id(), card->id(), card->type()); return {true, "Peach Garden is awaiting Nullification responses."};
     }
     if (card->type() == CardType::Harvest) {
         if (!action.targetIds.empty()) return {false, "Harvest does not require a target."};
         pendingCard_ = source->removeCard(card->id()); pendingCardUse_ = CardUseContext {source->id(), card->id(), card->type(), {}, 1};
-        log(source->name() + " used [Harvest]."); emitEvent(GameEventType::CardUsed, source->id(), {}, "Harvest"); startHarvest(source->id()); return {true, "Harvest is resolving each recipient."};
+        log(source->name() + " used [Harvest]."); emitEvent(GameEventType::CardUsed, source->id(), {}, "Harvest", card.get()); startHarvest(source->id()); return {true, "Harvest is resolving each recipient."};
     }
     if (card->type() == CardType::IronChain) {
         if (action.targetIds.empty()) {
             deck_.discard(source->removeCard(card->id()));
             drawCards(source->id(), 1);
             log(source->name() + " recast [Iron Chain].");
-            emitEvent(GameEventType::CardUsed, source->id(), {}, "IronChainRecast");
+            emitEvent(GameEventType::CardUsed, source->id(), {}, "IronChainRecast", card.get());
             return {true, "Iron Chain recast."};
         }
         if (action.targetIds.size() > 2) return {false, "Iron Chain allows one or two targets."};
@@ -203,7 +204,7 @@ ActionResult GameEngine::submitAction(const PlayCardAction &action)
         pendingCard_ = source->removeCard(card->id());
         pendingCardUse_ = CardUseContext {source->id(), card->id(), card->type(), action.targetIds, 1};
         log(source->name() + " used [Iron Chain].");
-        emitEvent(GameEventType::CardUsed, source->id(), {}, "IronChain");
+        emitEvent(GameEventType::CardUsed, source->id(), {}, "IronChain", card.get());
         beginTrickResolution(source->id(), card->id(), card->type());
         return {true, "Iron Chain is awaiting Nullification responses."};
     }
@@ -214,7 +215,7 @@ ActionResult GameEngine::submitAction(const PlayCardAction &action)
         pendingCard_ = source->removeCard(card->id());
         pendingCardUse_ = CardUseContext {source->id(), card->id(), card->type(), action.targetIds, 1};
         log(source->name() + " used [Fire Attack].");
-        emitEvent(GameEventType::CardUsed, source->id(), target->id(), "FireAttack");
+        emitEvent(GameEventType::CardUsed, source->id(), target->id(), "FireAttack", card.get());
         beginTrickResolution(source->id(), card->id(), card->type(), target->id());
         return {true, "Fire Attack is awaiting Nullification responses."};
     }
@@ -223,7 +224,7 @@ ActionResult GameEngine::submitAction(const PlayCardAction &action)
         const auto holder = findPlayer(action.targetIds[0]); const auto target = findPlayer(action.targetIds[1]);
         if (!holder || !target || holder->id() == source->id() || !holder->isAlive() || !target->isAlive() || !holder->equipment(EquipmentSlot::Weapon) || !canUseKill(holder->id(), target->id(), true)) return {false, "Borrowed Sword targets are invalid."};
         pendingCard_ = source->removeCard(card->id()); pendingCardUse_ = CardUseContext {source->id(), card->id(), card->type(), action.targetIds, 1};
-        log(source->name() + " used [Borrowed Sword] on " + holder->name() + ", targeting " + target->name() + "."); emitEvent(GameEventType::CardUsed, source->id(), holder->id(), "BorrowedSword");
+        log(source->name() + " used [Borrowed Sword] on " + holder->name() + ", targeting " + target->name() + "."); emitEvent(GameEventType::CardUsed, source->id(), holder->id(), "BorrowedSword", card.get());
         beginTrickResolution(source->id(), card->id(), card->type(), holder->id()); return {true, "Borrowed Sword is awaiting Nullification responses."};
     }
     if (card->type() == CardType::Indulgence || card->type() == CardType::SupplyShortage || card->type() == CardType::Lightning) {
@@ -231,7 +232,7 @@ ActionResult GameEngine::submitAction(const PlayCardAction &action)
         const auto target = findPlayer(action.targetIds.front());
         if (!target || !target->isAlive() || target->hasJudgmentCard(card->type())) return {false, "Delayed trick target is invalid or already has this trick."};
         pendingCard_ = source->removeCard(card->id()); pendingCardUse_ = CardUseContext {source->id(), card->id(), card->type(), action.targetIds, 1};
-        log(source->name() + " used delayed trick [" + card->name() + "]."); emitEvent(GameEventType::CardUsed, source->id(), target->id(), card->name());
+        log(source->name() + " used delayed trick [" + card->name() + "]."); emitEvent(GameEventType::CardUsed, source->id(), target->id(), card->name(), card.get());
         const auto trickName = pendingCard_->name(); delayedTrickSources_[pendingCard_->id()] = source->id(); target->addJudgmentCard(pendingCard_); pendingCard_.reset();
         log("[" + trickName + "] entered " + target->name() + "'s judgment zone."); finishPendingCardUse();
         return {true, "Delayed trick entered the judgment zone."};
@@ -241,7 +242,7 @@ ActionResult GameEngine::submitAction(const PlayCardAction &action)
         pendingCard_ = source->removeCard(card->id()); pendingCardUse_ = CardUseContext {source->id(), card->id(), card->type(), {}, 1};
         const auto type = card->type() == CardType::BarbarianInvasion ? MultiTargetEffectType::BarbarianInvasion : MultiTargetEffectType::ArrowBarrage;
         log(source->name() + (type == MultiTargetEffectType::BarbarianInvasion ? " used [Barbarian Invasion]." : " used [Arrow Barrage]."));
-        emitEvent(GameEventType::CardUsed, source->id(), {}, card->name()); startMultiTargetEffect(type, source->id(), card->id()); return {true, "AOE is resolving each target."};
+        emitEvent(GameEventType::CardUsed, source->id(), {}, card->name(), card.get()); startMultiTargetEffect(type, source->id(), card->id()); return {true, "AOE is resolving each target."};
     }
     const bool isSlash = isSlashCard(card->type());
     if (!isSlash && card->type() != CardType::Dismantlement
@@ -262,7 +263,7 @@ ActionResult GameEngine::submitAction(const PlayCardAction &action)
     testingIgnoreArmorForNextSlash_ = false;
     if (halberd) emitEquipmentEffect("方天画戟", EquipmentEffectType::MultiTargetEnabled, source->id(), 0, 3);
     if (isSlash && card->type() == CardType::Slash && nature == DamageNature::Fire) emitEquipmentEffect("朱雀羽扇", EquipmentEffectType::SlashConvertedToFire, source->id(), 0);
-    emitEvent(GameEventType::CardUsed, source->id(), target->id(), card->name());
+    emitEvent(GameEventType::CardUsed, source->id(), target->id(), card->name(), card.get());
     emitEvent(GameEventType::TargetSpecified, source->id(), target->id(), card->name());
     if (isSlash) {
         const int slashDamage = pendingCardUse_->slashDamage;
@@ -396,17 +397,17 @@ ActionResult GameEngine::submitAction(const RespondAction &action)
     deck_.discard(responder->removeCard(card->id()));
     pendingResponse_.reset();
     if (request.type == ResponseType::Nullification) {
-        log(responder->name() + " used [Nullification]."); emitEvent(GameEventType::CardResponded, responder->id(), request.requester, "Nullification"); resolveNullificationResponse(true);
+        log(responder->name() + " used [Nullification]."); emitEvent(GameEventType::CardResponded, responder->id(), request.requester, "Nullification", card.get()); resolveNullificationResponse(true);
     } else if (multiTargetEffect_) {
-        log(responder->name() + " used AOE response."); emitEvent(GameEventType::CardResponded, responder->id(), request.requester, request.type == ResponseType::Dodge ? "Dodge" : "Slash"); resolveMultiTargetResponse(true);
+        log(responder->name() + " used AOE response."); emitEvent(GameEventType::CardResponded, responder->id(), request.requester, request.type == ResponseType::Dodge ? "Dodge" : "Slash", card.get()); resolveMultiTargetResponse(true);
     } else if (request.type == ResponseType::Dodge) {
         log(responder->name() + " used [Dodge].");
-        emitEvent(GameEventType::CardResponded, responder->id(), request.requester, "Dodge");
+        emitEvent(GameEventType::CardResponded, responder->id(), request.requester, "Dodge", card.get());
         resolvePendingSlash(true);
     } else if (request.type == ResponseType::BorrowedSwordSlash) {
         const auto context = *borrowedSwordContext_;
         log(responder->name() + " used [Slash] forced by [Borrowed Sword] targeting " + findPlayer(context.attackTarget)->name() + ".");
-        emitEvent(GameEventType::CardResponded, responder->id(), context.attackTarget, "Slash");
+        emitEvent(GameEventType::CardResponded, responder->id(), context.attackTarget, "Slash", card.get());
         deferredSlashDamage_.reset();
         pendingCardUse_ = CardUseContext {responder->id(), card->id(), CardType::Slash, {context.attackTarget}, 1};
         createDodgeRequest(*pendingCardUse_);
@@ -420,7 +421,7 @@ ActionResult GameEngine::submitAction(const RespondAction &action)
         createDodgeRequest(*pendingCardUse_);
     } else {
         log(responder->name() + " used [Slash] in [Duel].");
-        emitEvent(GameEventType::CardResponded, responder->id(), request.requester, "Slash");
+        emitEvent(GameEventType::CardResponded, responder->id(), request.requester, "Slash", card.get());
         resolvePendingDuel(true);
     }
     return {true, "Response accepted."};
@@ -542,10 +543,12 @@ ActionResult GameEngine::submitAction(const SelectCardsAction &action)
         if (action.cardIds.size() != 1 || !fireAttackContext_) return {false, "Fire Attack requires one revealed hand card."};
         const auto selectable = std::find_if(request.selectableCards.begin(), request.selectableCards.end(), [&action](const SelectableCard& card) { return card.cardId == action.cardIds.front(); });
         const auto target = findPlayer(request.target);
-        if (selectable == request.selectableCards.end() || !target || !findHandCard(*target, selectable->cardId)) return {false, "Revealed card is no longer in hand."};
+        const auto revealed = selectable == request.selectableCards.end() || !target ? nullptr : findHandCard(*target, selectable->cardId);
+        if (!revealed) return {false, "Revealed card is no longer in hand."};
         fireAttackContext_->revealedCardId = selectable->cardId;
         pendingCardSelection_.reset();
-        log(target->name() + " revealed a hand card for [Fire Attack].");
+        log(target->name() + " revealed [" + revealed->name() + "] " + suitDisplay(revealed->suit())
+            + " " + std::to_string(revealed->rank()) + " for [Fire Attack].");
         createFireAttackDiscard();
         return {true, "Fire Attack card revealed."};
     }
@@ -1167,7 +1170,7 @@ void GameEngine::resolvePeachGarden(PlayerId source)
 
 void GameEngine::startHarvest(PlayerId source)
 {
-    HarvestContext context {source, {}, 0, {}, 0, false};
+    HarvestContext context {source, {}, 0, {}, 0, false, {}};
     const auto sourceIt = std::find_if(players_.begin(), players_.end(), [source](const auto& p) { return p->id() == source; });
     if (sourceIt == players_.end()) { finishPendingCardUse(); return; }
     const auto start = static_cast<std::size_t>(std::distance(players_.begin(), sourceIt));
@@ -1216,8 +1219,16 @@ void GameEngine::resolveHarvestSelection(const CardId& cardId)
     auto& context = *harvestContext_; const auto picker = findPlayer(pendingCardSelection_->requester);
     const auto it = std::find_if(context.pool.begin(), context.pool.end(), [&cardId](const auto& card) { return card->id() == cardId; });
     if (it == context.pool.end() || !picker || !picker->isAlive()) return;
-    auto selected = *it; context.pool.erase(it); picker->addCard(selected); pendingCardSelection_.reset();
-    log(picker->name() + " chose [" + selected->name() + "] from [Harvest]."); ++context.currentTargetIndex; context.awaitingNullification = false; createHarvestSelection();
+    auto selected = *it;
+    context.pool.erase(it);
+    context.choices.push_back(HarvestChoice {picker->id(), selected});
+    picker->addCard(selected);
+    pendingCardSelection_.reset();
+    log(picker->name() + " obtained [" + selected->name() + "] " + suitDisplay(selected->suit())
+        + " " + std::to_string(selected->rank()) + " from [Harvest].");
+    ++context.currentTargetIndex;
+    context.awaitingNullification = false;
+    createHarvestSelection();
 }
 
 void GameEngine::finishHarvest()
@@ -1930,9 +1941,11 @@ bool GameEngine::hasSelectableCards(const Player &player) const
 }
 void GameEngine::appendPublicLog(std::string entry) { log(std::move(entry)); }
 void GameEngine::log(std::string entry) { logEntries_.push_back(std::move(entry)); }
-void GameEngine::emitEvent(GameEventType type, std::optional<PlayerId> source, std::optional<PlayerId> target, std::string detail)
+void GameEngine::emitEvent(GameEventType type, std::optional<PlayerId> source, std::optional<PlayerId> target, std::string detail, const Card* publicCard)
 {
-    GameEvent event {type, source, target, std::move(detail)}; eventHistory_.push_back(event); dispatcher_.dispatch(event);
+    GameEvent event {type, source, target, std::move(detail), nextGameEventId_++};
+    if (publicCard) event.card = PublicEventCard {publicCard->name(), publicCard->type(), publicCard->suit(), publicCard->rank()};
+    eventHistory_.push_back(event); dispatcher_.dispatch(event);
 }
 void GameEngine::notifyInteractionCreated()
 {

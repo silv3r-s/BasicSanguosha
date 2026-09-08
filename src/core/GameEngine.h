@@ -81,6 +81,10 @@ struct MultiTargetEffectContext {
     ResponseType requiredResponse;
     bool awaitingNullification {false};
 };
+struct HarvestChoice {
+    PlayerId playerId;
+    std::shared_ptr<Card> card;
+};
 struct HarvestContext {
     PlayerId source;
     std::vector<PlayerId> targetOrder;
@@ -88,6 +92,7 @@ struct HarvestContext {
     std::vector<std::shared_ptr<Card>> pool;
     std::uint64_t currentRequestId {0};
     bool awaitingNullification {false};
+    std::vector<HarvestChoice> choices;
 };
 struct BorrowedSwordContext {
     PlayerId source;
@@ -287,7 +292,7 @@ private:
     std::shared_ptr<Card> findHandCard(const Player &player, const CardId &id) const;
     bool hasSelectableCards(const Player &player) const;
     void log(std::string entry);
-    void emitEvent(GameEventType type, std::optional<PlayerId> source = {}, std::optional<PlayerId> target = {}, std::string detail = {});
+    void emitEvent(GameEventType type, std::optional<PlayerId> source = {}, std::optional<PlayerId> target = {}, std::string detail = {}, const Card* publicCard = nullptr);
     void notifyInteractionCreated();
     void emitEquipmentEffect(std::string equipmentName, EquipmentEffectType effect, PlayerId ownerId, PlayerId targetId, int value = 0, CardType relatedCard = CardType::Slash);
     bool actionBlocked() const noexcept;
@@ -338,6 +343,7 @@ private:
     bool payingAxeCost_ {false};
     std::vector<std::string> logEntries_;
     std::vector<GameEvent> eventHistory_;
+    std::uint64_t nextGameEventId_ {1};
     std::uint64_t nextEquipmentEffectId_ {1};
     std::vector<EquipmentEffectEvent> equipmentEffects_;
 };
